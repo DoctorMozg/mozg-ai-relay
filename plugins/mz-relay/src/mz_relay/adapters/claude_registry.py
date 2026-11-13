@@ -110,7 +110,7 @@ class ClaudeRegistry:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (FileNotFoundError, NotADirectoryError):
             return None
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError, RecursionError) as exc:
             log.warning("malformed Claude registry entry %s: %s", path, exc)
             return None
         entry = _parse_entry(data)
@@ -208,6 +208,9 @@ def pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
+        return False
+    except OverflowError:
+        # Larger than a pid_t can hold, so no process has it.
         return False
     except PermissionError:
         return True

@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import logging
 import math
-import os
 import re
-import signal
 import subprocess
 from collections import OrderedDict
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,6 +20,7 @@ from mz_relay.adapters.codex_threads import (
 from mz_relay.delivery import DeliveryBinding, DeliveryJob, DeliveryResult, Outcome
 from mz_relay.envelope import Status, header_nonce
 from mz_relay.errors import BindingError
+from mz_relay.procs import Runner, run_in_group
 from mz_relay.roster import AgentSpec, Harness
 
 log = logging.getLogger(__name__)
@@ -32,39 +31,6 @@ CODEX = "codex"
 _DETAIL_MAX = 200
 # Rows that end by TTL never reach the adapter, so the oldest watches are dropped past this.
 _WATCH_MAX = 1024
-
-Runner = Callable[[Sequence[str], Mapping[str, str], float], subprocess.CompletedProcess[str]]
-
-
-def _run(
-    argv: Sequence[str], env: Mapping[str, str], timeout_s: float
-) -> subprocess.CompletedProcess[str]:
-    # Its own session lets a timeout kill what codex started too, e.g. a node wrapper's binary.
-    with subprocess.Popen(
-        list(argv),
-        env=dict(env),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        encoding="utf-8",
-        errors="replace",
-        start_new_session=True,
-    ) as proc:
-        try:
-            stdout, stderr = proc.communicate(timeout=timeout_s)
-        except BaseException:
-            # Any interruption, not only the timeout, must not leave codex's group running.
-            _kill_group(proc.pid)
-            proc.communicate()
-            raise
-    return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
-
-
-def _kill_group(pid: int) -> None:
-    try:
-        os.killpg(pid, signal.SIGKILL)
-    except ProcessLookupError:
-        log.debug("codex process group %d was already gone", pid)
 
 
 @dataclass(frozen=True)
@@ -95,7 +61,7 @@ class CodexAdapter:
         *,
         pw_home: Path,
         base_env: Mapping[str, str],
-        run: Runner = _run,
+        run: Runner = run_in_group,
         timeout_s: float = 30.0,
     ) -> None:
         if not isinstance(pw_home, Path) or not pw_home.is_absolute():

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from mz_relay import __version__
 from mz_relay.client import RelayClient
 from mz_relay.clock import SystemClock
+from mz_relay.doctor import Doctor, Finding
 from mz_relay.envelope import Status
 from mz_relay.errors import (
     DaemonUnavailable,
@@ -27,6 +28,7 @@ from mz_relay.hooks import run_hook
 from mz_relay.install import Installer, codex_snippet, opencode_snippet, plugin_bin
 from mz_relay.launcher import PLUGIN_DIR, DaemonLauncher
 from mz_relay.paths import Paths, user_home
+from mz_relay.procs import run_in_group
 from mz_relay.relayd import DEFAULT_IDLE_EXIT_S, run_daemon
 from mz_relay.roster import Harness, load_roster
 from mz_relay.service import CONTEXT_EXTEND_MAX
@@ -170,6 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
     snippet = commands.add_parser("snippet", help="print harness config entries for mz-relay")
     snippet.add_argument("kind", choices=["opencode", "codex"])
     snippet.add_argument("--name", required=True, metavar="N", help="the agent's roster name")
+    commands.add_parser("doctor", help="check the setup without starting relayd")
     return parser
 
 
@@ -193,6 +196,8 @@ def main(argv: Sequence[str] | None = None, *, terminal: Terminal | None = None)
     try:
         paths = Paths.from_env(os.environ, uid=os.getuid(), pw_home=user_home())
     except PathError as exc:
+        if args.command == "doctor":
+            return _report_findings([Finding("error", "paths", exc.message)])
         return _fail(exc, EXIT_USAGE)
     if args.command == "daemon":
         if args.ensure:
@@ -203,6 +208,8 @@ def main(argv: Sequence[str] | None = None, *, terminal: Terminal | None = None)
         return _stop(paths)
     if args.command == "install":
         return _install(paths, args.kind, args.dest, force=args.force)
+    if args.command == "doctor":
+        return _report_findings(Doctor(paths, run=run_in_group).check())
     user = UserCommands(paths)
     if args.command == "roster":
         return user.roster_check(args.path)
@@ -238,6 +245,14 @@ def _install(paths: Paths, kind: str, dest: str | None, *, force: bool) -> int:
         return _fail(exc, EXIT_USAGE)
     sys.stdout.write(f"installed {plan.dest}\n")
     return EXIT_OK
+
+
+def _report_findings(findings: Sequence[Finding]) -> int:
+    for finding in findings:
+        # One line per finding, even when an error message spans several.
+        text = _safe_text(" ".join(finding.text.splitlines()))
+        sys.stdout.write(f"{finding.level}  {finding.topic}: {text}\n")
+    return EXIT_ERROR if any(finding.level == "error" for finding in findings) else EXIT_OK
 
 
 def _snippet(kind: str, name: str) -> int:

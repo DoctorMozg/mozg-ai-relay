@@ -42,6 +42,14 @@ class CodexThread:
 
 
 @dataclass(frozen=True)
+class ThreadLookup:
+    """The newest thread with a name and how many threads in the index carry that name."""
+
+    thread: CodexThread
+    count: int
+
+
+@dataclass(frozen=True)
 class _Candidate:
     thread: CodexThread
     # (whole seconds as an aware datetime, nanoseconds), so tuples order as instants.
@@ -79,6 +87,14 @@ def _candidate(line: str, name: str) -> _Candidate | None:
 
 def resolve_thread(codex_home: Path, name: str) -> CodexThread:
     """The newest thread named `name` in <codex_home>/session_index.jsonl."""
+    found = lookup_thread(codex_home, name)
+    if found.count > 1:
+        log.warning("%d Codex threads named %s; using %s", found.count, name, found.thread.id)
+    return found.thread
+
+
+def lookup_thread(codex_home: Path, name: str) -> ThreadLookup:
+    """resolve_thread, with the number of threads named `name` kept for reporting duplicates."""
     if not isinstance(name, str) or not name:
         raise ValueError(f"name must be a non-empty string, got {name!r}")
     index = codex_home / SESSION_INDEX
@@ -92,10 +108,7 @@ def resolve_thread(codex_home: Path, name: str) -> CodexThread:
         raise CodexThreadMissing(codex_home, name)
     # Codex appends to the index, so of equal instants the later line is the later write.
     _, newest = max(enumerate(matches), key=lambda pair: (pair[1].instant, pair[0]))
-    thread = newest.thread
-    if len(matches) > 1:
-        log.warning("%d Codex threads named %s; using %s", len(matches), name, thread.id)
-    return thread
+    return ThreadLookup(newest.thread, len(matches))
 
 
 def find_rollout(codex_home: Path, thread_id: str) -> Path | None:

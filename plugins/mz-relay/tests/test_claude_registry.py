@@ -253,9 +253,12 @@ class TestFindSession:
         assert found is not None
         assert found.pid == 4242
 
-    def test_key_files_and_malformed_entries_are_skipped(self, config_dir: Path) -> None:
+    @pytest.mark.parametrize("malformed", ["{", "[" * 100_000], ids=["truncated", "deeply-nested"])
+    def test_key_files_and_malformed_entries_are_skipped(
+        self, config_dir: Path, malformed: str
+    ) -> None:
         (config_dir / "sessions" / "4242.abcdef.key").write_text("secret", encoding="utf-8")
-        write_entry(config_dir, 1111, "{")
+        write_entry(config_dir, 1111, malformed)
         write_entry(config_dir, 4242, registry_json(4242, "s-1"))
         found = ClaudeRegistry(config_dir).find_session("s-1")
         assert found is not None
@@ -300,6 +303,11 @@ class TestPidAlive:
     @pytest.mark.parametrize("pid", [0, -1])
     def test_a_non_positive_pid_is_never_alive(self, pid: int) -> None:
         # kill(0, 0) signals the whole process group and would always succeed.
+        assert pid_alive(pid) is False
+
+    @pytest.mark.parametrize("pid", [2**31, 2**64])
+    def test_a_pid_beyond_any_os_pid_is_never_alive(self, pid: int) -> None:
+        # os.kill raises OverflowError for values a pid_t cannot hold.
         assert pid_alive(pid) is False
 
 
