@@ -517,6 +517,12 @@ class RelayService:
         # Checking under the condition means a notify between check and wait is not lost.
         with changed:
             while True:
+                # A stopping relayd closes the store after a bounded drain, so leave before that.
+                if self.stop_requested.is_set():
+                    log.info(
+                        "waiter of %s (session %r) released: relayd stopping", me.name, session_id
+                    )
+                    return {"timeout": True}
                 leased = store.lease_fallback(me.name, clock.now(), LEASE_S)
                 if leased is not None:
                     log.info(

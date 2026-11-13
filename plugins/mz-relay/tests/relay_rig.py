@@ -7,6 +7,7 @@ load for the early units before the store, engine and service exist.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import io
 import itertools
 import json
@@ -24,6 +25,7 @@ from types import TracebackType
 from typing import IO, TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from mz_relay.clock import Clock
     from mz_relay.delivery import (
         DeliveryBinding,
         DeliveryJob,
@@ -257,6 +259,25 @@ class FakeClock:
             raise ValueError(f"a clock cannot go back: advance({s})")
         with self._lock:
             self._now += s
+
+
+class SleepHookClock:
+    """Wraps a clock; `on_next_sleep`, when set, runs once as the next sleep starts."""
+
+    def __init__(self, inner: Clock, on_next_sleep: Callable[[], object] | None = None) -> None:
+        self._inner = inner
+        self.on_next_sleep = on_next_sleep
+        self.slept: list[float] = []
+
+    def now(self) -> float:
+        return self._inner.now()
+
+    def sleep(self, s: float) -> None:
+        hook, self.on_next_sleep = self.on_next_sleep, None
+        if hook is not None:
+            hook()
+        self.slept.append(s)
+        self._inner.sleep(s)
 
 
 class FakeAdapter:
@@ -497,19 +518,35 @@ class FakeRelayd:
             raise errors[0]
 
 
+@contextmanager
+def waiter_lock_held(paths: Paths, session_id: str) -> Iterator[None]:
+    """Holds the session's waiter lock on its own file description, as a SessionStart waiter."""
+    paths.waiter_dir.mkdir(parents=True, exist_ok=True)
+    fd = os.open(paths.waiter_dir / f"{session_id}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
 # A real relayd, in this process or as a child
 
 
 @contextmanager
 def running_daemon(
-    paths: Paths, adapters: Mapping[Harness, HarnessAdapter] | None = None
+    paths: Paths,
+    adapters: Mapping[Harness, HarnessAdapter] | None = None,
+    *,
+    roster_text: str | None = None,
 ) -> Iterator[RelayDaemon]:
-    """An in-process relayd on `paths` with the pull roster; stopped and joined on exit."""
+    """An in-process relayd on `paths` with `roster_text` (default the pull roster)."""
     from mz_relay.clock import SystemClock
     from mz_relay.relayd import DaemonConfig, RelayDaemon
 
     paths.ensure_dirs()
-    paths.roster.write_text(pull_roster(paths.config_dir), encoding="utf-8")
+    text = pull_roster(paths.config_dir) if roster_text is None else roster_text
+    paths.roster.write_text(text, encoding="utf-8")
     daemon = RelayDaemon(DaemonConfig(paths=paths, clock=SystemClock()), dict(adapters or {}))
     runner = InThread(daemon.serve_forever)
     try:
@@ -595,11 +632,17 @@ def relayd_call(path: Path, op: str, args: Message) -> Message:
         return conn.request(op, args, rid=2)
 
 
-def daemon_pid(path: Path) -> int | None:
+def relayd_status(path: Path) -> Message:
+    """relayd's `status` result, or {} while nothing answers on `path`."""
     try:
-        pid = relayd_call(path, "status", {}).get("result", {}).get("pid")
+        status: Message = relayd_call(path, "status", {}).get("result", {})
     except (OSError, ValueError):
-        return None
+        return {}
+    return status
+
+
+def daemon_pid(path: Path) -> int | None:
+    pid = relayd_status(path).get("pid")
     return pid if isinstance(pid, int) else None
 
 
@@ -624,22 +667,47 @@ def stop_daemon(path: Path) -> None:
             os.kill(pid, signal.SIGKILL)
 
 
-class McpProc:
-    """One `bin/mz-relay mcp --harness opencode` child, spoken to over its stdio pipes."""
+def reap(proc: subprocess.Popen[bytes], timeout_s: float = PROC_WAIT_S) -> int:
+    """Closes the child's stdin and waits `timeout_s` for it to exit, then kills it."""
+    if proc.stdin is not None and not proc.stdin.closed:
+        with contextlib.suppress(OSError):
+            proc.stdin.close()
+    try:
+        return proc.wait(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        return proc.wait(timeout=PROC_WAIT_S)
 
-    def __init__(self, name: str, env: Mapping[str, str], *, cwd: Path, log: Path) -> None:
-        self.name = name
+
+class McpProc:
+    """One `bin/mz-relay mcp --harness <harness>` child over stdio pipes; `name` None leaves
+    MZ_RELAY_NAME unset, so the agent is resolved from the rest of `env`."""
+
+    def __init__(
+        self,
+        name: str | None,
+        env: Mapping[str, str],
+        *,
+        cwd: Path,
+        log: Path,
+        harness: str = "opencode",
+    ) -> None:
+        self.name = name or harness
         self.seen: list[bytes] = []
+        self.log = log
         self._lines: queue.Queue[bytes] = queue.Queue()
         self._rid = 0
         self._log = log.open("wb")
+        child_env = dict(env)
+        if name is not None:
+            child_env["MZ_RELAY_NAME"] = name
         try:
             self.proc = subprocess.Popen(
-                [str(BIN), "mcp", "--harness", "opencode"],
+                [str(BIN), "mcp", "--harness", harness],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=self._log,
-                env={**env, "MZ_RELAY_NAME": name},
+                env=child_env,
                 cwd=cwd,
             )
         except BaseException:
@@ -711,15 +779,13 @@ class McpProc:
         while not self._lines.empty():
             self.seen.append(self._lines.get_nowait())
 
+    def stderr_text(self) -> str:
+        self._log.flush()
+        return self.log.read_text(encoding="utf-8", errors="replace")
+
     def close(self) -> None:
-        if self.proc.stdin is not None and not self.proc.stdin.closed:
-            with contextlib.suppress(OSError):
-                self.proc.stdin.close()
         try:
-            self.proc.wait(timeout=PROC_WAIT_S)
-        except subprocess.TimeoutExpired:
-            self.proc.kill()
-            self.proc.wait(timeout=PROC_WAIT_S)
+            reap(self.proc)
         finally:
             self._log.close()
 
@@ -731,10 +797,10 @@ _ids = itertools.count(1)
 
 
 class EngineRig:
-    """Real Store and roster, a FakeClock, FakeAdapters at the adapter boundary."""
+    """Real Store and roster, a FakeClock, and the given adapters (usually FakeAdapters)."""
 
     def __init__(
-        self, home: Path, adapters: Mapping[Harness, FakeAdapter], extra_agents: str = ""
+        self, home: Path, adapters: Mapping[Harness, HarnessAdapter], extra_agents: str = ""
     ) -> None:
         from mz_relay.delivery import DeliveryEngine, EngineDeps
         from mz_relay.roster import parse_roster

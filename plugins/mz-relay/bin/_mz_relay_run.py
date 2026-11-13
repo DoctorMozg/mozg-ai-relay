@@ -11,19 +11,24 @@ from pathlib import Path
 
 MINIMUM_PYTHON = (3, 12)
 SRC = Path(__file__).resolve().parents[1] / "src"
+EXIT_USAGE = 2
+# Claude reads a hook's exit 2 as "block this tool" or "wake me with stderr as the prompt".
+EXIT_HOOK_FAILED = 0
 
 
 def run(argv: list[str]) -> int:
+    failed = EXIT_HOOK_FAILED if argv[:1] == ["hook"] else EXIT_USAGE
     if sys.version_info < MINIMUM_PYTHON:
         found = ".".join(str(part) for part in sys.version_info[:3])
         sys.stderr.write(f"mz-relay: needs Python 3.12 or newer, found {found}\n")
-        return 2
+        return failed
     sys.path.insert(0, str(SRC))
     try:
         from mz_relay.cli import main
-    except ImportError as error:
+    except (ImportError, SyntaxError) as error:
+        # SyntaxError: a module caught half-written by a plugin update.
         sys.stderr.write(f"mz-relay: cannot load the package from {SRC}: {error}\n")
-        return 2
+        return failed
     return int(main(argv))
 
 

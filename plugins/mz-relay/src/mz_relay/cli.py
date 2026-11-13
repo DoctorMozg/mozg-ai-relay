@@ -22,6 +22,7 @@ from mz_relay.errors import (
     ProtocolMismatch,
     RelayError,
 )
+from mz_relay.hooks import run_hook
 from mz_relay.launcher import DaemonLauncher
 from mz_relay.paths import Paths, user_home
 from mz_relay.relayd import DEFAULT_IDLE_EXIT_S, run_daemon
@@ -115,6 +116,10 @@ def build_parser() -> argparse.ArgumentParser:
     mcp.add_argument(
         "--harness", required=True, choices=[harness.value for harness in MCP_HARNESSES]
     )
+    hook = commands.add_parser(
+        "hook", help="run a Claude Code hook: wait <SessionStart|Stop> | gate"
+    )
+    hook.add_argument("hook_args", nargs=argparse.REMAINDER, metavar="...")
     roster = commands.add_parser("roster", help="work with the roster file")
     roster_commands = roster.add_subparsers(
         dest="roster_command", metavar="<action>", required=True
@@ -144,6 +149,9 @@ def main(argv: Sequence[str] | None = None, *, terminal: Terminal | None = None)
     if args.command == "mcp":
         # Path errors become an unavailable server there, so the harness still gets a reply.
         return run_mcp(Harness(args.harness), os.environ)
+    if args.command == "hook":
+        # Hooks are advisory: run_hook logs its own failures and exits 0.
+        return run_hook(args.hook_args, sys.stdin, sys.stdout, sys.stderr, os.environ)
     try:
         paths = Paths.from_env(os.environ, uid=os.getuid(), pw_home=user_home())
     except PathError as exc:

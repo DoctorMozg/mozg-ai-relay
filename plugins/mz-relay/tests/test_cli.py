@@ -473,7 +473,7 @@ class TestStop:
 
         # The refused hello's socket is closed, so shutdown goes out on a fresh one, unannounced.
         assert server.ops() == ["hello", "shutdown"]
-        # A refused hello carries no daemon_pid, so the S7.1 line has nothing to name.
+        # A refused hello carries no daemon_pid, so the stop line has no pid to name.
         assert capsys.readouterr() == ("stopped relayd\n", "")
 
 

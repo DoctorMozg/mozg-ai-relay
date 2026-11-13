@@ -103,6 +103,10 @@ class DaemonUnavailable(_SingleCodeError):
     CODE = "daemon_unavailable"
 
 
+class RelayUnavailable(RelayError):
+    """The relay could not be set up; carries the setup error's code, message is the full text."""
+
+
 class PathError(_SingleCodeError):
     CODE = "path_invalid"
 

@@ -19,6 +19,7 @@ TESTS = Path(__file__).resolve().parent
 # The suite-wide pytest config lists no plugin tests folder, so `relay_rig` needs this.
 sys.path.insert(0, str(TESTS))
 
+from fakes_claude import SESSION_ID, TranscriptWriter, transcript_in  # noqa: E402
 from relay_rig import (  # noqa: E402
     BIN,
     PLUGIN,
@@ -149,3 +150,16 @@ def make_rig(relay_home: Path) -> Iterator[Callable[..., EngineRig]]:
     yield make
     for built in rigs:
         built.store.close()
+
+
+@pytest.fixture
+def config_dir(tmp_path: Path) -> Path:
+    """A Claude config dir with an empty sessions/ registry folder."""
+    (tmp_path / "cfg" / "sessions").mkdir(parents=True)
+    return tmp_path / "cfg"
+
+
+@pytest.fixture
+def writer(config_dir: Path) -> TranscriptWriter:
+    """Writes the transcript of session SESSION_ID under config_dir."""
+    return TranscriptWriter(transcript_in(config_dir), session_id=SESSION_ID)

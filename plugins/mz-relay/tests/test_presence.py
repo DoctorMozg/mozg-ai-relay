@@ -14,7 +14,7 @@ from mz_relay.clock import SystemClock
 from mz_relay.errors import DaemonUnavailable
 from mz_relay.launcher import DaemonLauncher
 from mz_relay.paths import Paths
-from mz_relay.presence import PresenceSession, RegisterArgs
+from mz_relay.presence import PresenceSession, RegisterArgs, configured_name
 from mz_relay.roster import Harness
 from relay_rig import (
     WAIT_S,
@@ -169,3 +169,22 @@ class TestPresence:
 
         with pytest.raises(DaemonUnavailable):
             session.start(wait_s=0.3)
+
+
+class TestConfiguredName:
+    """MCP servers and hooks both see the plugin option; it wins over a shell MZ_RELAY_NAME."""
+
+    OPTION = "CLAUDE_PLUGIN_OPTION_RELAY_NAME"
+
+    def test_the_plugin_option_wins_over_the_shell_name(self) -> None:
+        assert configured_name({self.OPTION: "cc", "MZ_RELAY_NAME": "cf"}) == "cc"
+
+    def test_the_shell_name_is_used_without_the_plugin_option(self) -> None:
+        assert configured_name({"MZ_RELAY_NAME": "cf"}) == "cf"
+
+    @pytest.mark.parametrize("raw", ["", "  ", "${user_config.relay_name}"])
+    def test_an_unset_looking_plugin_option_falls_back_to_the_shell_name(self, raw: str) -> None:
+        assert configured_name({self.OPTION: raw, "MZ_RELAY_NAME": "cf"}) == "cf"
+
+    def test_neither_set_is_none(self) -> None:
+        assert configured_name({self.OPTION: "", "MZ_RELAY_NAME": ""}) is None

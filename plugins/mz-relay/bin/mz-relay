@@ -4,6 +4,19 @@ set -u
 
 here=${0%/*}
 [[ $here == "$0" ]] && here=.
+runner=$here/_mz_relay_run.py
+
+fail() {
+  echo "mz-relay: $1" >&2
+  # Claude reads a hook's exit 2 as "block this tool" or "wake me with stderr as the prompt".
+  [[ $hook_call == yes ]] && exit 0
+  exit 2
+}
+hook_call=no
+[[ ${1:-} == hook ]] && hook_call=yes
+
+# A plugin update removes the old version's folder while its hooks may still be starting.
+[[ -r $runner ]] || fail "cannot read $runner"
 
 # A bare python3 is often older than 3.12, so the versioned names are tried first.
 for py in "${MZ_RELAY_PYTHON:-}" python3.14 python3.13 python3.12 python3; do
@@ -11,9 +24,8 @@ for py in "${MZ_RELAY_PYTHON:-}" python3.14 python3.13 python3.12 python3; do
   command -v "$py" >/dev/null 2>&1 || continue
   if "$py" -c 'import sys; sys.exit(sys.version_info < (3, 12))' >/dev/null 2>&1; then
     # -I keeps PYTHONPATH and the user site off the path; -B leaves no __pycache__ in the plugin.
-    exec "$py" -I -B "$here/_mz_relay_run.py" "$@"
+    exec "$py" -I -B "$runner" "$@"
   fi
 done
 
-echo "mz-relay: needs Python 3.12 or newer on PATH (or set MZ_RELAY_PYTHON)" >&2
-exit 2
+fail "needs Python 3.12 or newer on PATH (or set MZ_RELAY_PYTHON)"

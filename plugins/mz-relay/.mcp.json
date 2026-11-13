@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "mz-relay": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/mz-relay",
+      "args": [
+        "mcp",
+        "--harness",
+        "claude"
+      ],
+      "env": {
+        "CLAUDE_PLUGIN_OPTION_RELAY_NAME": "${user_config.relay_name}"
+      }
+    }
+  }
+}

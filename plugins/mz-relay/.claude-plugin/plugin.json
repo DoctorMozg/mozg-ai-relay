@@ -15,5 +15,14 @@
     "codex",
     "pi",
     "opencode"
-  ]
+  ],
+  "userConfig": {
+    "relay_name": {
+      "type": "string",
+      "title": "Relay name",
+      "description": "Roster name for sessions of this Claude account. Leave empty to match by config dir and folder.",
+      "required": false,
+      "default": ""
+    }
+  }
 }

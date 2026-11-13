@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from mz_relay.adapters.claude import ClaudeAdapter
 from mz_relay.clock import Clock
 from mz_relay.delivery import HarnessAdapter
 from mz_relay.paths import Paths
@@ -24,9 +25,9 @@ class AdapterContext:
 
 
 def build_adapters(ctx: AdapterContext) -> dict[Harness, HarnessAdapter]:
-    """The adapters relayd starts a delivery worker for; none yet, so every agent is pull-only."""
+    """The adapters relayd starts a delivery worker for; other harnesses stay pull-only."""
     if not isinstance(ctx, AdapterContext):
         raise ValueError(f"ctx must be an AdapterContext, got {type(ctx).__name__}")
-    adapters: dict[Harness, HarnessAdapter] = {}
+    adapters: dict[Harness, HarnessAdapter] = {Harness.CLAUDE: ClaudeAdapter(clock=ctx.clock)}
     log.info("built %d delivery adapters", len(adapters))
     return adapters

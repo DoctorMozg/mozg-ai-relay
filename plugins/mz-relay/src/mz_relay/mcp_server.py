@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Protocol, TextIO
 
 from mz_relay.envelope import Kind
-from mz_relay.errors import RelayError
+from mz_relay.errors import RelayError, RelayUnavailable
 from mz_relay.policy import MAX_BODY_CHARS
 
 log = logging.getLogger(__name__)
@@ -253,6 +253,10 @@ class McpServer:
             raise _RpcError(INVALID_PARAMS, f"{name}: arguments must be an object")
         try:
             text = tool(arguments)
+        except RelayUnavailable as exc:
+            # Its message already names the code, so it goes out as-is.
+            log.info("tool %s answered unavailable: %s", name, exc.code)
+            return _tool_result(exc.message, is_error=True)
         except RelayError as exc:
             log.info("tool %s returned error %s", name, exc.code)
             return _tool_result(f"mz-relay error {exc.code}: {exc.message}", is_error=True)

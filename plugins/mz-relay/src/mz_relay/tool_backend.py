@@ -13,18 +13,28 @@ from types import FrameType
 from typing import TextIO
 
 from mz_relay import __version__, ids
+from mz_relay.adapters.claude_registry import (
+    NotInClaudeSession,
+    claude_config_dir,
+    discover_own_session,
+)
 from mz_relay.clock import SystemClock
-from mz_relay.errors import DaemonUnavailable, EnvelopeError, ProtocolError, RelayError
+from mz_relay.errors import (
+    DaemonUnavailable,
+    EnvelopeError,
+    ProtocolError,
+    RelayError,
+    RelayUnavailable,
+)
 from mz_relay.launcher import DaemonLauncher
 from mz_relay.mcp_server import INBOX_LIMIT_MAX, INBOX_LIMIT_MIN, McpServer, SendArgs, ToolBackend
 from mz_relay.paths import Paths, user_home
-from mz_relay.presence import PresenceSession, RegisterArgs
+from mz_relay.presence import PresenceSession, RegisterArgs, configured_name
 from mz_relay.roster import Harness
 
 log = logging.getLogger(__name__)
 
 MCP_HARNESSES = (Harness.CLAUDE, Harness.CODEX, Harness.OPENCODE)
-NAME_VARIABLE = "MZ_RELAY_NAME"
 LOG_FORMAT = "%(asctime)s mz-relay-mcp[%(process)d] %(levelname)s %(name)s: %(message)s"
 
 
@@ -123,8 +133,8 @@ class UnavailableBackend:
     def peers(self) -> str:
         raise self._error()
 
-    def _error(self) -> RelayError:
-        return RelayError(self._code, self._text)
+    def _error(self) -> RelayUnavailable:
+        return RelayUnavailable(self._code, self._text)
 
 
 class _Terminated(BaseException):
@@ -170,19 +180,39 @@ def _launcher(env: Mapping[str, str]) -> DaemonLauncher:
 
 
 def _register_args(harness: Harness, env: Mapping[str, str]) -> RegisterArgs:
-    name = _relay_name(env.get(NAME_VARIABLE))
+    name = configured_name(env)
     log.info("registering %s session as %s", harness, name or "<resolved from cwd>")
-    return RegisterArgs(name=name, harness=harness, cwd=Path.cwd(), pid=os.getpid(), client="mcp")
+    config_dir: Path | None = None
+    delivery: dict[str, object] | None = None
+    if harness is Harness.CLAUDE:
+        config_dir, delivery = _claude_binding(env)
+    return RegisterArgs(
+        name=name,
+        harness=harness,
+        cwd=Path.cwd(),
+        pid=os.getpid(),
+        client="mcp",
+        config_dir=config_dir,
+        delivery=delivery,
+    )
 
 
-def _relay_name(raw: str | None) -> str | None:
-    """An empty value or an unsubstituted `${...}` placeholder means no name was configured."""
-    if raw is None:
-        return None
-    name = raw.strip()
-    if not name or (name.startswith("${") and name.endswith("}")):
-        return None
-    return name
+def _claude_binding(env: Mapping[str, str]) -> tuple[Path, dict[str, object] | None]:
+    """The session's native inbox binding; without a messaging socket the waiter delivers."""
+    try:
+        # Claude Code is this MCP child's parent; CLAUDE_PID may leak in from an outer session.
+        own = discover_own_session(env, ppid=os.getppid())
+    except NotInClaudeSession as exc:
+        log.warning("registering tools only, with no native inbox: %s", exc.message)
+        return claude_config_dir(env), None
+    delivery: dict[str, object] = {
+        "messaging_socket": str(own.messaging_socket),
+        "pid": own.pid,
+        "config_dir": str(own.config_dir),
+        "session_id": own.session_id,
+    }
+    log.info("native inbox binding for Claude pid %d", own.pid)
+    return own.config_dir, delivery
 
 
 def _utf8(stream: TextIO) -> TextIO:

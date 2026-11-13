@@ -113,6 +113,8 @@ class DeliveryEngine:
         self._deps = deps
         # Rows already warned about, so a persistent fault logs one WARNING, not one per pass.
         self._warned: set[tuple[str, str]] = set()
+        # Rows deferred before, so a long busy turn logs one INFO line per row, not one per pass.
+        self._deferred: set[tuple[str, str]] = set()
 
     def run_once(self, harness: Harness) -> int:
         """Delivers due QUEUED rows and confirms due HANDED_OFF rows of the harness's recipients."""
@@ -259,6 +261,12 @@ class DeliveryEngine:
     def _apply(self, attempt: _Attempt, result: DeliveryResult, expected: Status) -> None:
         row, now = attempt.row, self._deps.clock.now()
         what = f"outcome {result.outcome}"
+        key = (row.envelope.source, row.envelope.id)
+        deferred_before = key in self._deferred
+        if result.outcome is Outcome.DEFERRED:
+            self._deferred.add(key)
+        else:
+            self._deferred.discard(key)
         match result.outcome:
             case Outcome.CONFIRMED:
                 change = StatusChange(Status.DELIVERED, via=attempt.adapter.via)
@@ -284,7 +292,9 @@ class DeliveryEngine:
         if not self._write(row, change, expected, what):
             return
         env = row.envelope
-        if (
+        if result.outcome is Outcome.DEFERRED and deferred_before:
+            log.debug("%s for %s to %s again: now %s", what, env.id, env.to, change.status)
+        elif (
             change.status is attempt.adapter.exhausted_status
             and result.outcome is Outcome.NOT_CONFIRMED
         ):

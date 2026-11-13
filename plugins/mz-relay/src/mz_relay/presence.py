@@ -19,6 +19,17 @@ log = logging.getLogger(__name__)
 DEFAULT_BACKOFF_S = (0.5, 1.0, 2.0, 4.0, 10.0)
 # Backoff sleeps in slices so close() stops a long wait promptly.
 SLEEP_SLICE_S = 0.05
+# The plugin option first: .mcp.json maps it under its own name, so MCP server and hooks agree.
+NAME_VARIABLES = ("CLAUDE_PLUGIN_OPTION_RELAY_NAME", "MZ_RELAY_NAME")
+
+
+def configured_name(env: Mapping[str, str]) -> str | None:
+    """The first configured roster name; empty or an unsubstituted `${...}` counts as unset."""
+    for variable in NAME_VARIABLES:
+        name = env.get(variable, "").strip()
+        if name and not (name.startswith("${") and name.endswith("}")):
+            return name
+    return None
 
 
 @dataclass(frozen=True)

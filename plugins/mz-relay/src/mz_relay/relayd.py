@@ -265,6 +265,8 @@ class RelayDaemon:
 
     def _shut_down(self, server: _Server, threads: list[threading.Thread]) -> None:
         self._stop.set()
+        # Parked `wait` ops see this and return before the drain ends and the store closes.
+        self._service.stop_requested.set()
         self._notify()
         server.shutdown()
         server.server_close()
