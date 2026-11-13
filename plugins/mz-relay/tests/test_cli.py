@@ -1,4 +1,4 @@
-"""User CLI: roster check, status, peers, held, approve, deny and context extend outputs."""
+"""User CLI: roster check, status, peers, held, approve, deny, context extend and log outputs."""
 
 from __future__ import annotations
 
@@ -37,7 +37,14 @@ REFUSAL = (
     "not by an agent"
 )
 ISO_TIME = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z")
-NO_SPAWN_ARGV = [["held"], ["status"], ["stop"], ["approve", "m-12345678"], ["deny", "m-12345678"]]
+NO_SPAWN_ARGV = [
+    ["held"],
+    ["status"],
+    ["stop"],
+    ["approve", "m-12345678"],
+    ["deny", "m-12345678"],
+    ["log"],
+]
 
 Serve = Callable[[Reply], FakeRelayd]
 
@@ -754,3 +761,193 @@ class TestPreviewControlChars:
         self, approve_lines: Callable[[str], list[str]]
     ) -> None:
         assert approve_lines("\x07" * 200 + "…")[1] == "\ufffd" * 200 + "…"
+
+
+LOG_ID = "01JC0000000000000000000002"
+LOG_TIME = "2026-11-13T10:00:00.000Z"
+LOG_HEAD = f"{LOG_TIME}  {LOG_ID}  alice → bob  request"
+
+
+def log_row(preview: str = "please review", reason: str | None = None) -> Message:
+    """One alice → bob row as relayd's log op returns it."""
+    return {
+        "id": LOG_ID,
+        "source": "alice",
+        "to": "bob",
+        "kind": "request",
+        "status": "queued",
+        "reason": reason,
+        "time": LOG_TIME,
+        "preview": preview,
+    }
+
+
+def serving_log(*rows: Message) -> Reply:
+    return hello_then(lambda req: ok(req, {"messages": list(rows)}) if req["op"] == "log" else None)
+
+
+class TestLog:
+    """`log` lines are `<time>  <id>  <source> → <to>  <kind>  <status>[ (<reason>)]  <preview>`."""
+
+    @pytest.fixture
+    def printed(
+        self, cli_paths: Paths, fake_relayd: Serve, capsys: pytest.CaptureFixture[str]
+    ) -> Callable[..., str]:
+        def run(*rows: Message) -> str:
+            fake_relayd(serving_log(*rows))
+            assert main(["log"]) == 0
+            return capsys.readouterr().out
+
+        return run
+
+    @staticmethod
+    def columns(out: str) -> list[list[str]]:
+        # Safe only because the bodies and reasons these tests produce hold no double space.
+        return [line.split("  ") for line in out.splitlines()]
+
+    def test_a_row_prints_time_id_route_kind_status_and_preview(
+        self, printed: Callable[..., str]
+    ) -> None:
+        assert printed(log_row()) == f"{LOG_HEAD}  queued  please review\n"
+
+    def test_a_reason_follows_the_status_in_parentheses(self, printed: Callable[..., str]) -> None:
+        out = printed(log_row(reason="attempt 1 failed: socket busy"))
+
+        assert out == f"{LOG_HEAD}  queued (attempt 1 failed: socket busy)  please review\n"
+
+    @pytest.mark.parametrize(
+        ("preview", "shown"),
+        [
+            ("line one\n" + "x" * 191 + "…", "line one " + "x" * 51 + "…"),
+            ("x" * 60, "x" * 60),
+            ("\x1b" * 70, "\ufffd" * 60 + "…"),
+        ],
+        ids=["cut-at-60", "exactly-60", "escaped-then-cut"],
+    )
+    def test_preview_is_cut_to_60_chars_with_newlines_as_spaces(
+        self, printed: Callable[..., str], preview: str, shown: str
+    ) -> None:
+        assert printed(log_row(preview=preview)) == f"{LOG_HEAD}  queued  {shown}\n"
+
+    def test_control_chars_in_preview_and_reason_show_as_replacement_chars(
+        self, printed: Callable[..., str]
+    ) -> None:
+        out = printed(log_row(preview=HOSTILE, reason=HOSTILE))
+
+        assert out == f"{LOG_HEAD}  queued ({SHOWN})  {SHOWN}\n"
+
+    def test_a_reason_spanning_lines_prints_on_one(self, printed: Callable[..., str]) -> None:
+        out = printed(log_row(reason="socket gone\nretrying"))
+
+        assert out == f"{LOG_HEAD}  queued (socket gone retrying)  please review\n"
+
+    def test_no_rows_prints_no_messages(self, printed: Callable[..., str]) -> None:
+        assert printed() == "no messages\n"
+
+    def test_context_and_limit_are_passed_to_relayd(
+        self, cli_paths: Paths, fake_relayd: Serve
+    ) -> None:
+        server = fake_relayd(serving_log())
+        ctx = new_id()
+
+        assert main(["log", "--context", ctx, "--limit", "2"]) == 0
+
+        assert server.args_of("log") == [{"context_id": ctx, "limit": 2}]
+
+    def test_without_options_no_context_is_asked_for(
+        self, cli_paths: Paths, fake_relayd: Serve
+    ) -> None:
+        server = fake_relayd(serving_log())
+
+        assert main(["log"]) == 0
+
+        [args] = server.args_of("log")
+        assert args.get("context_id") is None
+        # Leaving the default to relayd or sending it explicitly reads the same rows.
+        assert args.get("limit") in (None, 50)
+
+    @pytest.mark.parametrize("limit", ["1", "200"])
+    def test_the_limit_bounds_are_sent_as_given(
+        self, cli_paths: Paths, fake_relayd: Serve, limit: str
+    ) -> None:
+        server = fake_relayd(serving_log())
+
+        assert main(["log", "--limit", limit]) == 0
+
+        [args] = server.args_of("log")
+        assert args.get("limit") == int(limit)
+
+    @pytest.mark.parametrize("limit", ["0", "-1", "201", "many"])
+    def test_a_limit_outside_1_to_200_is_a_usage_error_and_nothing_is_sent(
+        self,
+        cli_paths: Paths,
+        fake_relayd: Serve,
+        limit: str,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        server = fake_relayd(serving_log())
+
+        with pytest.raises(SystemExit) as usage:
+            main(["log", "--limit", limit])
+
+        assert usage.value.code == 2
+        assert "--limit" in capsys.readouterr().err
+        assert server.ops() == []
+
+    def test_an_agent_session_may_read_the_log(
+        self, printed: Callable[..., str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Unlike approve and deny, reading the log lifts no guard.
+        monkeypatch.setenv("CLAUDECODE", "1")
+
+        assert printed(log_row()) == f"{LOG_HEAD}  queued  please review\n"
+
+    def test_context_prints_that_contexts_rows_oldest_first(
+        self, relay: Relay, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        alice_client, alice = relay.agent("alice")
+        bob_client, bob = relay.agent("bob")
+        question = relay.send(alice_client, alice, "bob", body="which port?")
+        relay.send(alice_client, alice, "bob", body="an unrelated task")
+        answer = relay.send(bob_client, bob, "alice", body="8080", in_reply_to=question)
+
+        assert main(["log", "--context", question]) == 0
+
+        rows = self.columns(capsys.readouterr().out)
+        assert [row[1:4] for row in rows] == [
+            [question, "alice → bob", "request"],
+            [answer, "bob → alice", "reply"],
+        ]
+        assert all(ISO_TIME.fullmatch(row[0]) for row in rows)
+        assert [row[-1] for row in rows] == ["which port?", "8080"]
+
+    def test_limit_2_prints_the_two_newest_rows_oldest_first(
+        self, relay: Relay, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        client, alice = relay.agent("alice")
+        ids = [relay.send(client, alice, "bob", body=f"task {n}") for n in range(3)]
+
+        assert main(["log", "--limit", "2"]) == 0
+
+        assert [row[1] for row in self.columns(capsys.readouterr().out)] == ids[1:]
+
+    def test_a_200_char_body_previews_as_60_chars_and_an_ellipsis(
+        self, relay: Relay, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        client, carol = relay.agent("carol")
+        msg_id = relay.send(client, carol, "alice", body="b" * 200)
+
+        assert main(["log"]) == 0
+
+        [row] = self.columns(capsys.readouterr().out)
+        assert row[1:] == [msg_id, "carol → alice", "request", "held", "b" * 60 + "…"]
+
+    def test_an_unknown_context_prints_no_messages(
+        self, relay: Relay, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        client, alice = relay.agent("alice")
+        relay.send(client, alice, "bob")
+
+        assert main(["log", "--context", new_id()]) == 0
+
+        assert capsys.readouterr() == ("no messages\n", "")

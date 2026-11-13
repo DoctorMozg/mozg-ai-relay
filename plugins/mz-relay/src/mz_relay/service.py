@@ -36,10 +36,12 @@ CLIENTS = frozenset({"mcp", "cli", "hook", "pi", "opencode"})
 NO_HELLO_OPS = frozenset({"hello", "shutdown"})
 INBOX_LIMIT_MAX = 50
 INBOX_LIMIT_DEFAULT = 20
+LOG_LIMIT_MAX = 200
+LOG_LIMIT_DEFAULT = 50
 SENT_LIMIT = 20
 WAIT_TIMEOUT_MAX_S = 3600
 WAIT_SLICE_S = 1.0
-HELD_PREVIEW_CHARS = 200
+PREVIEW_CHARS = 200
 CONTEXT_EXTEND_MAX = 100
 ACKABLE = frozenset({Status.DELIVERING, Status.HANDED_OFF, Status.DELIVERED, Status.LEASED})
 NOT_YET_DELIVERED = frozenset({Status.QUEUED, Status.FALLBACK, Status.HELD})
@@ -161,10 +163,10 @@ def _status_entry(row: StoredMessage) -> dict[str, object]:
     return {"id": env.id, "to": env.to, "status": row.status.value, "reason": row.reason}
 
 
-def _held_preview(body: str) -> str:
-    if len(body) <= HELD_PREVIEW_CHARS:
+def _preview(body: str) -> str:
+    if len(body) <= PREVIEW_CHARS:
         return body
-    return body[:HELD_PREVIEW_CHARS] + "…"
+    return body[:PREVIEW_CHARS] + "…"
 
 
 class RelayService:
@@ -190,6 +192,7 @@ class RelayService:
             "confirm": self._confirm,
             "status": self._status,
             "context_extend": self._context_extend,
+            "log": self._log,
             "shutdown": self._shutdown,
         }
 
@@ -508,7 +511,7 @@ class RelayService:
                     # A recipient dropped from the roster since the send has no label to show.
                     "to_label": None if recipient is None else recipient.label.value,
                     "time": env.time,
-                    "preview": _held_preview(env.body),
+                    "preview": _preview(env.body),
                 }
             )
         return {"messages": messages}
@@ -543,6 +546,27 @@ class RelayService:
         default_cap = self._deps.roster.current().policy.turn_cap
         turn_cap = self._deps.store.extend_context(context_id, by, default_cap)
         return {"context_id": context_id, "turn_cap": turn_cap}
+
+    def _log(self, conn: ConnState, args: _Args) -> dict[str, object]:
+        # The user's view of all traffic: no token, and reading marks nothing as notified.
+        context_id = args.optional_text("context_id")
+        limit = args.integer("limit", 1, LOG_LIMIT_MAX, LOG_LIMIT_DEFAULT)
+        messages: list[dict[str, object]] = []
+        for row in self._deps.store.log(context_id, limit):
+            env = row.envelope
+            messages.append(
+                {
+                    "id": env.id,
+                    "source": env.source,
+                    "to": env.to,
+                    "kind": env.kind.value,
+                    "status": row.status.value,
+                    "reason": row.reason,
+                    "time": env.time,
+                    "preview": _preview(env.body),
+                }
+            )
+        return {"messages": messages}
 
     def _wait(self, conn: ConnState, args: _Args) -> dict[str, object]:
         roster = self._deps.roster.current()

@@ -1,4 +1,4 @@
-"""RelayService ops inbox, ack, held, decide, wait, confirm and status; sender notices."""
+"""RelayService ops inbox, ack, held, decide, wait, confirm, status and log; sender notices."""
 
 from __future__ import annotations
 
@@ -23,6 +23,8 @@ from relay_rig import (
     PROC_WAIT_S,
     InThread,
     ServiceRig,
+    envelope,
+    mid,
     notified_within,
     run_in_thread,
 )
@@ -664,3 +666,211 @@ class TestNoticeSuffix:
         text = rig.call(conn, "peers", token=alice)["text"]
 
         assert text.endswith(SUFFIX.format(n=1))
+
+
+class TestLog:
+    """The user's message log: any sender, no token, newest rows returned oldest first."""
+
+    @pytest.fixture
+    def user(self, rig: ServiceRig) -> ConnState:
+        return rig.hello(client="cli")
+
+    @staticmethod
+    def insert(rig: ServiceRig, msg_id: str, at: float) -> None:
+        """An alice → bob row stored at `at`; its context id is its own id."""
+        rig.store.insert_message(envelope(msg_id, at=at), Status.QUEUED, at, next_attempt_at=None)
+
+    @classmethod
+    def stored(cls, rig: ServiceRig, count: int) -> list[str]:
+        """`count` rows one second apart, each opening a separate context."""
+        ids = [mid(n) for n in range(1, count + 1)]
+        for n, msg_id in enumerate(ids, start=1):
+            cls.insert(rig, msg_id, 1000.0 + n)
+        return ids
+
+    @staticmethod
+    def ids(result: dict[str, object]) -> list[str]:
+        messages = result["messages"]
+        assert isinstance(messages, list)
+        return [str(m["id"]) for m in messages]
+
+    def test_a_row_carries_route_kind_status_reason_time_and_preview(
+        self, rig: ServiceRig, user: ConnState
+    ) -> None:
+        conn, alice = rig.connect("alice")
+        msg_id = sent_id(rig, conn, alice, "bob", body="see src/app.py")
+        row = rig.store.get("alice", msg_id)
+        assert row is not None
+
+        result = rig.call(user, "log")
+
+        assert result == {
+            "messages": [
+                {
+                    "id": msg_id,
+                    "source": "alice",
+                    "to": "bob",
+                    "kind": "request",
+                    "status": "queued",
+                    "reason": None,
+                    "time": row.envelope.time,
+                    "preview": "see src/app.py",
+                }
+            ]
+        }
+
+    def test_a_row_shows_its_reason_when_one_is_set(self, rig: ServiceRig, user: ConnState) -> None:
+        conn, alice = rig.connect("alice")
+        msg_id = sent_id(rig, conn, alice, "bob")
+        retry = StatusChange(Status.QUEUED, reason="attempt 1 failed: socket busy")
+        force_status(rig, "alice", msg_id, retry)
+
+        [row] = rig.call(user, "log")["messages"]
+
+        assert (row["status"], row["reason"]) == ("queued", "attempt 1 failed: socket busy")
+
+    def test_rows_of_every_sender_come_oldest_first(self, rig: ServiceRig, user: ConnState) -> None:
+        conn_a, alice = rig.connect("alice")
+        conn_c, carol = rig.connect("carol")
+        first = sent_id(rig, conn_a, alice, "bob")
+        rig.clock.advance(1.0)
+        held = sent_id(rig, conn_c, carol, "alice")
+        rig.clock.advance(1.0)
+        last = sent_id(rig, conn_a, alice, "bob")
+
+        result = rig.call(user, "log")
+
+        assert self.ids(result) == [first, held, last]
+        assert [m["status"] for m in result["messages"]] == ["queued", "held", "queued"]
+
+    def test_context_id_keeps_only_that_contexts_rows(
+        self, rig: ServiceRig, user: ConnState
+    ) -> None:
+        conn_a, alice = rig.connect("alice")
+        conn_b, bob = rig.connect("bob")
+        question = sent_id(rig, conn_a, alice, "bob")
+        rig.clock.advance(1.0)
+        sent_id(rig, conn_a, alice, "bob", body="an unrelated task")
+        rig.clock.advance(1.0)
+        answer = rig.send(conn_b, bob, "alice", body="done", kind="reply", in_reply_to=question)
+
+        result = rig.call(user, "log", context_id=question)
+
+        assert self.ids(result) == [question, answer["id"]]
+
+    def test_an_unknown_context_has_no_rows(self, rig: ServiceRig, user: ConnState) -> None:
+        conn, alice = rig.connect("alice")
+        sent_id(rig, conn, alice, "bob")
+
+        assert rig.call(user, "log", context_id=new_id()) == {"messages": []}
+
+    def test_a_limit_keeps_the_newest_rows_still_oldest_first(
+        self, rig: ServiceRig, user: ConnState
+    ) -> None:
+        ids = self.stored(rig, 4)
+
+        assert self.ids(rig.call(user, "log", limit=2)) == ids[2:]
+
+    def test_the_limit_defaults_to_50(self, rig: ServiceRig, user: ConnState) -> None:
+        ids = self.stored(rig, 51)
+
+        assert self.ids(rig.call(user, "log")) == ids[1:]
+
+    @pytest.mark.parametrize(("limit", "kept"), [(1, 1), (200, 51)], ids=["min-1", "max-200"])
+    def test_the_limit_bounds_are_accepted(
+        self, rig: ServiceRig, user: ConnState, limit: int, kept: int
+    ) -> None:
+        ids = self.stored(rig, 51)
+
+        assert self.ids(rig.call(user, "log", limit=limit)) == ids[-kept:]
+
+    def test_rows_stamped_alike_keep_insert_order(self, rig: ServiceRig, user: ConnState) -> None:
+        # Ids sort differently from insert order, so only the insert order can explain the result.
+        tied = [mid(3), mid(1), mid(2)]
+        for msg_id in tied:
+            self.insert(rig, msg_id, 1000.0)
+
+        assert self.ids(rig.call(user, "log", limit=2)) == tied[1:]
+
+    def test_log_needs_hello_first(self, rig: ServiceRig) -> None:
+        with pytest.raises(RelayError) as err:
+            rig.call(rig.new_conn(), "log")
+
+        assert err.value.code == "invalid_request"
+
+    @pytest.mark.parametrize("limit", [0, -1, 201, True, "10", 2.5])
+    def test_a_limit_outside_1_to_200_is_invalid_args(
+        self, rig: ServiceRig, user: ConnState, limit: object
+    ) -> None:
+        with pytest.raises(RelayError) as err:
+            rig.call(user, "log", limit=limit)
+
+        assert err.value.code == "invalid_args"
+        assert err.value.message.startswith("log: limit ")
+
+    @pytest.mark.parametrize("context_id", ["", 7])
+    def test_an_empty_or_non_string_context_id_is_invalid_args(
+        self, rig: ServiceRig, user: ConnState, context_id: object
+    ) -> None:
+        with pytest.raises(RelayError) as err:
+            rig.call(user, "log", context_id=context_id)
+
+        assert err.value.code == "invalid_args"
+        assert err.value.message.startswith("log: context_id ")
+
+    @pytest.mark.parametrize(
+        ("body", "preview"),
+        [
+            ("y" * 200, "y" * 200),
+            ("y" * 201, "y" * 200 + "…"),
+            ("line one\nline two", "line one\nline two"),
+        ],
+        ids=["200", "201", "newline"],
+    )
+    def test_preview_is_the_first_200_chars_of_the_body_with_an_ellipsis_when_cut(
+        self, rig: ServiceRig, user: ConnState, body: str, preview: str
+    ) -> None:
+        conn, alice = rig.connect("alice")
+        sent_id(rig, conn, alice, "bob", body=body)
+
+        [row] = rig.call(user, "log")["messages"]
+
+        assert row["preview"] == preview
+
+    def test_reading_the_log_leaves_rows_and_notices_alone(
+        self, rig: ServiceRig, user: ConnState
+    ) -> None:
+        conn, alice = rig.connect("alice")
+        msg_id = sent_id(rig, conn, alice, "bob")
+        expire(rig, "alice", msg_id)
+        before = rig.store.get("alice", msg_id)
+        pending = rig.store.pending_notices("alice")
+
+        [row] = rig.call(user, "log")["messages"]
+
+        assert (row["status"], row["reason"]) == ("expired", "ttl")
+        assert rig.store.get("alice", msg_id) == before
+        assert rig.store.pending_notices("alice") == pending == 1
+
+    def test_store_log_returns_the_newest_rows_oldest_first(self, rig: ServiceRig) -> None:
+        ids = self.stored(rig, 3)
+
+        newest = rig.store.log(None, 2)
+        only_newest = rig.store.log(None, 1)
+        one_context = rig.store.log(ids[0], 50)
+
+        assert [row.envelope.id for row in newest] == ids[1:]
+        assert [row.envelope.id for row in only_newest] == ids[2:]
+        assert [row.envelope.id for row in one_context] == ids[:1]
+
+    def test_store_log_breaks_time_ties_by_insert_order(self, rig: ServiceRig) -> None:
+        tied = [mid(3), mid(1), mid(2)]
+        for msg_id in tied:
+            self.insert(rig, msg_id, 1000.0)
+
+        assert [row.envelope.id for row in rig.store.log(None, 2)] == tied[1:]
+
+    @pytest.mark.parametrize("limit", [0, -5, True])
+    def test_store_log_rejects_a_limit_below_one(self, rig: ServiceRig, limit: int) -> None:
+        with pytest.raises(ValueError, match="limit"):
+            rig.store.log(None, limit)

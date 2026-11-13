@@ -31,7 +31,7 @@ from mz_relay.paths import Paths, user_home
 from mz_relay.procs import run_in_group
 from mz_relay.relayd import DEFAULT_IDLE_EXIT_S, run_daemon
 from mz_relay.roster import Harness, load_roster
-from mz_relay.service import CONTEXT_EXTEND_MAX
+from mz_relay.service import CONTEXT_EXTEND_MAX, LOG_LIMIT_DEFAULT, LOG_LIMIT_MAX
 from mz_relay.tool_backend import MCP_HARNESSES, run_mcp
 
 log = logging.getLogger(__name__)
@@ -110,6 +110,16 @@ def _extend_by(raw: str) -> int:
     return value
 
 
+def _log_limit(raw: str) -> int:
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"expected an integer, got {raw!r}") from exc
+    if not 1 <= value <= LOG_LIMIT_MAX:
+        raise argparse.ArgumentTypeError(f"must be in 1..{LOG_LIMIT_MAX}, got {raw!r}")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROG, description="Message agents in other harnesses by roster name."
@@ -145,6 +155,15 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("status", help="show the running relayd, its agents and message counts")
     commands.add_parser("peers", help="list the roster agents and whether they are online")
     commands.add_parser("held", help="list messages held for your approval")
+    log_cmd = commands.add_parser("log", help="list recent messages, oldest first")
+    log_cmd.add_argument("--context", default=None, metavar="C", help="only this context's rows")
+    log_cmd.add_argument(
+        "--limit",
+        type=_log_limit,
+        default=LOG_LIMIT_DEFAULT,
+        metavar="N",
+        help=f"newest N messages (default {LOG_LIMIT_DEFAULT})",
+    )
     approve = commands.add_parser("approve", help="release a held message after confirming")
     approve.add_argument("id")
     deny = commands.add_parser("deny", help="refuse a held message after confirming")
@@ -219,6 +238,8 @@ def main(argv: Sequence[str] | None = None, *, terminal: Terminal | None = None)
         return user.peers()
     if args.command == "held":
         return user.held()
+    if args.command == "log":
+        return user.log(args.context, args.limit)
     if args.command in ("approve", "deny"):
         reason = args.reason if args.command == "deny" else None
         return user.decide(Decision(args.command, args.id, reason), terminal or user_terminal())
@@ -385,6 +406,32 @@ class UserCommands:
             sys.stdout.write(f"{msg.get('id')}\t{_route(msg)}\t{msg.get('time')}\t{preview}\n")
         return EXIT_OK
 
+    def log(self, context_id: str | None, limit: int) -> int:
+        running = _connect_running(self._paths)
+        if isinstance(running, int):
+            return running
+        args: dict[str, object] = {"limit": limit}
+        if context_id is not None:
+            args["context_id"] = context_id
+        with closing(running[0]) as client:
+            try:
+                messages = _records(client.call("log", args), "messages")
+            except RelayError as exc:
+                return _fail(exc, EXIT_ERROR)
+        if not messages:
+            sys.stdout.write("no messages\n")
+            return EXIT_OK
+        for msg in messages:
+            status = str(msg.get("status"))
+            reason = msg.get("reason")
+            if reason is not None:
+                status += f" ({_one_line(str(reason))})"
+            sys.stdout.write(
+                f"{msg.get('time')}  {msg.get('id')}  {msg.get('source')} → {msg.get('to')}"
+                f"  {msg.get('kind')}  {status}  {_list_preview(str(msg.get('preview', '')))}\n"
+            )
+        return EXIT_OK
+
     def context_extend(self, context_id: str, by: int, terminal: Terminal) -> int:
         """Raises a context's turn cap; like approve, it lifts a guard, so agents are refused."""
         if _refused(terminal, f"context extend {context_id}"):
@@ -479,8 +526,12 @@ def _safe_text(text: str) -> str:
     return text.translate(UNSAFE_CHARS)
 
 
+def _one_line(text: str) -> str:
+    return _safe_text(text.replace("\r\n", " ").replace("\n", " "))
+
+
 def _list_preview(preview: str) -> str:
-    flat = _safe_text(preview.replace("\r\n", " ").replace("\n", " "))
+    flat = _one_line(preview)
     if len(flat) <= LIST_PREVIEW_CHARS:
         return flat
     return flat[:LIST_PREVIEW_CHARS] + "…"

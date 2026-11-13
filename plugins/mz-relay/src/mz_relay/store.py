@@ -588,6 +588,18 @@ class Store:
             "source = ?", (source, limit), "ORDER BY created_at DESC, rowid DESC LIMIT ?"
         )
 
+    def log(self, context_id: str | None, limit: int) -> list[StoredMessage]:
+        """The newest `limit` rows of one context, or of all, returned oldest first."""
+        _check_limit(limit)
+        params: tuple[object, ...]
+        if context_id is None:
+            where, params = "1", (limit,)
+        else:
+            _check_name(context_id, "context_id")
+            where, params = "context_id = ?", (context_id, limit)
+        newest = self._select(where, params, "ORDER BY created_at DESC, rowid DESC LIMIT ?")
+        return newest[::-1]
+
     def _notice_where(self, source: str) -> tuple[str, tuple[object, ...]]:
         _check_name(source, "source")
         statuses = _status_set(NOTICE_STATUSES, "notice statuses")
