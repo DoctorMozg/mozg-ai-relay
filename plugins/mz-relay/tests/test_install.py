@@ -10,7 +10,7 @@ from typing import Protocol
 import pytest
 from codex_rig import FAST_PATH, codex_job, codex_spec, fake_calls, index_line, write_index
 from conftest import BIN, PLUGIN
-from mz_relay import __version__
+from mz_relay import __version__, install
 from mz_relay.adapters import AdapterContext, build_adapters
 from mz_relay.adapters.claude import ClaudeAdapter
 from mz_relay.adapters.codex import CodexAdapter
@@ -303,6 +303,25 @@ class TestCodexSnippet:
     def test_a_relative_bin_path_is_refused(self) -> None:
         with pytest.raises(ValueError, match="bin_path"):
             codex_snippet(Path("bin/mz-relay"), "reviewer")
+
+
+class TestTomlString:
+    """toml_string writes any text as a TOML basic string that tomllib reads back unchanged."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "plain",
+            'odd "dir" \\ x',
+            "/home/u/\U0001f680/cfg",
+            "tab\there",
+            "line\nbreak",
+            "del\x7f",
+        ],
+        ids=["plain", "quotes-backslash", "non-bmp", "tab", "newline", "del"],
+    )
+    def test_round_trips_through_tomllib(self, text: str) -> None:
+        assert tomllib.loads(f"v = {install.toml_string(text)}")["v"] == text
 
 
 @pytest.mark.usefixtures("agent_free_env")

@@ -134,13 +134,13 @@ def codex_snippet(bin_path: Path, name: str) -> str:
         f'# Paste into <CODEX_HOME>/config.toml of the account that runs "{name}".'
         " Start Codex without -c.\n"
         f"[mcp_servers.{MCP_SERVER_NAME}]\n"
-        f"command = {_toml_string(str(bin_path))}\n"
+        f"command = {toml_string(str(bin_path))}\n"
         'args = ["mcp", "--harness", "codex"]\n'
-        f"env = {{ MZ_RELAY_NAME = {_toml_string(name)} }}\n"
+        f"env = {{ MZ_RELAY_NAME = {toml_string(name)} }}\n"
     )
 
 
-def _toml_string(value: str) -> str:
+def toml_string(value: str) -> str:
     """A TOML basic string; control characters, which TOML forbids raw, become \\u escapes."""
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     escaped = "".join(

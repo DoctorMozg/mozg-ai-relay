@@ -8,6 +8,7 @@ import shlex
 import subprocess
 import time
 import uuid
+import warnings
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import TracebackType
@@ -25,8 +26,29 @@ SETTLE_S = 60.0
 POLL_S = 0.5
 ARRIVED = frozenset({Status.DELIVERED, Status.ACKED})
 TMUX_TIMEOUT_S = 30.0
+DELETE_TIMEOUT_S = 60.0
 # A pane started from inside tmux would otherwise talk to the user's own server.
 TMUX_VARIABLES = ("TMUX", "TMUX_PANE")
+
+
+def delete_codex_thread(codex_bin: str, thread_id: str, env: Mapping[str, str]) -> None:
+    """`codex delete --force <id>` (--force takes only a UUID). Only warns: an exception in
+    cleanup would hide the test's own failure."""
+    argv = [codex_bin, "delete", "--force", thread_id]
+    try:
+        done = subprocess.run(
+            argv,
+            env=dict(env),
+            capture_output=True,
+            text=True,
+            timeout=DELETE_TIMEOUT_S,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        warnings.warn(f"codex delete {thread_id} timed out; delete it by hand", stacklevel=2)
+        return
+    if done.returncode != 0:
+        warnings.warn(f"codex delete {thread_id} failed: {done.stderr.strip()}", stacklevel=2)
 
 
 class TmuxPane:

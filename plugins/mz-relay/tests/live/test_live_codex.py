@@ -6,13 +6,19 @@ from __future__ import annotations
 
 import contextlib
 import secrets
-import subprocess
 import tomllib
-import warnings
 from pathlib import Path
 
 import pytest
-from live_rig import POLL_S, START_S, TURN_S, Architect, RelayRows, TmuxPane
+from live_rig import (
+    POLL_S,
+    START_S,
+    TURN_S,
+    Architect,
+    RelayRows,
+    TmuxPane,
+    delete_codex_thread,
+)
 from relay_rig import paths_in, running_daemon, wait_until
 
 # The TUI counts as ready once its screen stops changing for this long.
@@ -20,7 +26,6 @@ TUI_QUIET_S = 3.0
 # Lets the TUI finish completing the slash command before Enter.
 RENAME_PAUSE_S = 1.0
 ROLLOUT_S = 60.0
-DELETE_TIMEOUT_S = 60.0
 HEADER = "[mz-relay] Peer message from architect"
 
 
@@ -96,22 +101,8 @@ def test_a_peer_message_is_queued_into_a_renamed_codex_thread(
         return True
 
     def delete_thread() -> None:
-        # --force takes only a UUID, so the thread is deleted by the id it resolved to.
-        # Cleanup only warns: an exception here would hide the test's own failure.
         for thread_id in thread_ids:
-            argv = [codex_bin, "delete", "--force", thread_id]
-            try:
-                done = subprocess.run(
-                    argv, env=env, capture_output=True, text=True, timeout=DELETE_TIMEOUT_S
-                )
-            except subprocess.TimeoutExpired:
-                warnings.warn(
-                    f"codex delete {thread_id} timed out; delete it by hand", stacklevel=1
-                )
-                continue
-            if done.returncode != 0:
-                detail = done.stderr.strip()
-                warnings.warn(f"codex delete {thread_id} failed: {detail}", stacklevel=1)
+            delete_codex_thread(codex_bin, thread_id, env)
 
     with (
         running_daemon(paths, build_adapters(ctx), roster_text=roster),

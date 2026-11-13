@@ -1,0 +1,30 @@
+# The demo's three agents. scripts/demo.py fills in the accounts and the hold setting.
+version = 1
+
+[policy]
+hold_corporate_to_personal = true
+
+[agents.architect]
+harness = "claude"
+label = "personal"
+role = "architect"
+description = "Hands the task to builder and closes it with kind=done once the tests pass."
+claude_config_dir = "~/.claude"
+may_send_to = ["builder"]
+
+[agents.builder]
+harness = "claude"
+label = "corporate"
+role = "builder"
+description = "Makes the failing tests pass and asks reviewer for a review before replying."
+claude_config_dir = "~/.claude"
+may_send_to = ["architect", "reviewer"]
+
+[agents.reviewer]
+harness = "codex"
+label = "personal"
+role = "reviewer"
+description = "Reviews the builder's change and replies approve or request-changes with reasons."
+codex_home = "~/.codex"
+codex_thread = "mzr-demo-reviewer"
+may_send_to = ["builder"]
