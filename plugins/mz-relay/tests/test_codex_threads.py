@@ -1,8 +1,7 @@
-"""Codex thread lookup by /rename name, and finding a message's nonce in the thread's rollout."""
+"""Codex thread lookup by /rename name, and finding the thread's rollout."""
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 
@@ -13,7 +12,6 @@ from mz_relay.adapters.codex_threads import (
     CodexThreadMissing,
     find_rollout,
     resolve_thread,
-    rollout_has_nonce,
 )
 
 OLD = {"id": "t-old", "thread_name": "reviewer", "updated_at": "2026-11-10T09:00:00.123456789Z"}
@@ -149,27 +147,3 @@ class TestFindRollout:
 
     def test_no_rollout_is_none(self, codex_home: Path) -> None:
         assert find_rollout(codex_home, "t-new") is None
-
-
-class TestRolloutHasNonce:
-    NONCE = "01JC0000000000000000009001"
-
-    def test_a_line_holding_the_nonce_is_found(self, codex_home: Path) -> None:
-        line = json.dumps({"type": "response_item", "payload": {"text": f"id: {self.NONCE}"}})
-        path = write_rollout(codex_home, "2026/11/13", "t-new", mtime=1.0, text=f"{{}}\n{line}\n")
-
-        assert rollout_has_nonce(path, self.NONCE)
-
-    def test_a_rollout_without_the_nonce_is_false(self, codex_home: Path) -> None:
-        text = json.dumps({"payload": {"text": "id: 01JC0000000000000000009002"}}) + "\n"
-        path = write_rollout(codex_home, "2026/11/13", "t-new", mtime=1.0, text=text)
-
-        assert not rollout_has_nonce(path, self.NONCE)
-
-    def test_a_last_line_without_a_newline_is_read(self, codex_home: Path) -> None:
-        path = write_rollout(codex_home, "2026/11/13", "t-new", text=f"{{}}\nid: {self.NONCE}")
-
-        assert rollout_has_nonce(path, self.NONCE)
-
-    def test_a_missing_rollout_is_false(self, codex_home: Path) -> None:
-        assert not rollout_has_nonce(codex_home / "gone.jsonl", self.NONCE)

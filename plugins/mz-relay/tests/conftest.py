@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Iterator
@@ -107,6 +108,14 @@ def fake_relayd(relay_paths: Paths) -> Iterator[Callable[[Reply], FakeRelayd]]:
             errors.append(error)
     if errors:
         raise errors[0]
+
+
+@pytest.fixture
+def dead_pid() -> int:
+    """The pid of a child that has exited and been reaped."""
+    child = subprocess.Popen([sys.executable, "-c", ""])
+    child.wait()
+    return child.pid
 
 
 @pytest.fixture

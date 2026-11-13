@@ -202,12 +202,10 @@ class TestRegistryReadSettled:
         assert ClaudeRegistry(config_dir).read_settled(os.getpid(), clock=clock) is None
         assert len(clock.slept) == 1
 
-    def test_a_dead_pid_is_not_waited_for(self, config_dir: Path) -> None:
-        child = subprocess.Popen(["true"])
-        child.wait()
+    def test_a_dead_pid_is_not_waited_for(self, config_dir: Path, dead_pid: int) -> None:
         clock = SleepHookClock(FakeClock())
 
-        assert ClaudeRegistry(config_dir).read_settled(child.pid, clock=clock) is None
+        assert ClaudeRegistry(config_dir).read_settled(dead_pid, clock=clock) is None
         assert clock.slept == []
 
     def test_a_present_entry_is_read_without_waiting(self, config_dir: Path) -> None:

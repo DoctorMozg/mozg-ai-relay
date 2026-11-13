@@ -130,18 +130,6 @@ def find_rollout(codex_home: Path, thread_id: str) -> Path | None:
     return None if newest is None else newest[1]
 
 
-def rollout_has_nonce(path: Path, nonce: str) -> bool:
-    """Whether a line of the rollout holds `nonce` as raw text; a missing rollout holds none."""
-    if not isinstance(nonce, str) or not nonce or "\n" in nonce:
-        raise ValueError(f"nonce must be a non-empty single-line string, got {nonce!r}")
-    needle = nonce.encode("utf-8")
-    try:
-        with path.open("rb") as handle:
-            return any(needle in line for line in handle)
-    except FileNotFoundError:
-        return False
-
-
 @dataclass(frozen=True)
 class RolloutScan:
     found: bool

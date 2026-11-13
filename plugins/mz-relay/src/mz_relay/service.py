@@ -25,6 +25,7 @@ from mz_relay.errors import (
 )
 from mz_relay.identity import IdentityQuery, resolve_identity
 from mz_relay.ids import valid_id
+from mz_relay.mcp_server import INBOX_LIMIT_DEFAULT, INBOX_LIMIT_MAX, INBOX_LIMIT_MIN
 from mz_relay.paths import Paths
 from mz_relay.policy import ParentFacts, Policy, PolicyFacts, SendRequest
 from mz_relay.protocol import PROTOCOL_VERSION, Request
@@ -35,8 +36,6 @@ log = logging.getLogger(__name__)
 
 CLIENTS = frozenset({"mcp", "cli", "hook", "pi", "opencode"})
 NO_HELLO_OPS = frozenset({"hello", "shutdown"})
-INBOX_LIMIT_MAX = 50
-INBOX_LIMIT_DEFAULT = 20
 LOG_LIMIT_MAX = 200
 LOG_LIMIT_DEFAULT = 50
 SENT_LIMIT = 20
@@ -420,7 +419,7 @@ class RelayService:
     def _inbox(self, conn: ConnState, args: _Args) -> dict[str, object]:
         roster = self._deps.roster.current()
         me = self._caller(roster, args)
-        limit = args.integer("limit", 1, INBOX_LIMIT_MAX, INBOX_LIMIT_DEFAULT)
+        limit = args.integer("limit", INBOX_LIMIT_MIN, INBOX_LIMIT_MAX, INBOX_LIMIT_DEFAULT)
         store = self._deps.store
         pulled = store.pull_for(me.name, limit, self._deps.clock.now())
         messages = [self._rendered(roster, row) for row in pulled]

@@ -36,7 +36,6 @@ from codex_rig import (
     write_rollout,
 )
 from mz_relay.adapters.codex import QUEUED_RE, CodexAdapter
-from mz_relay.adapters.codex_threads import rollout_has_nonce
 from mz_relay.delivery import (
     BACKOFF_S,
     MAX_ATTEMPTS,
@@ -490,7 +489,7 @@ class TestIncrementalConfirm:
         # while a pass reading nothing new costs well under a tenth of one scan of 32 MB.
         passes = 20
         append_rollout(codex.rollout, user_line("x" * 1000) * 32_000)
-        full_scan = statistics.median(seconds(rollout_has_nonce, codex.rollout) for _ in range(3))
+        full_scan = statistics.median(seconds(scan_whole_rollout, codex.rollout) for _ in range(3))
         adapter = codex.adapter("queue")
         adapter.deliver(codex.job(adapter))
         handed_off = codex.job(adapter, Status.HANDED_OFF)
@@ -503,6 +502,12 @@ class TestIncrementalConfirm:
         assert elapsed < passes * full_scan / 4
         append_rollout(codex.rollout, user_line(job_text()))
         assert adapter.confirm(handed_off).outcome is Outcome.CONFIRMED
+
+
+def scan_whole_rollout(path: Path, nonce: str) -> bool:
+    needle = nonce.encode("utf-8")
+    with path.open("rb") as handle:
+        return any(needle in line for line in handle)
 
 
 def seconds(scan: Callable[[Path, str], bool], path: Path) -> float:

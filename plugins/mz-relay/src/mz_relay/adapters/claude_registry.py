@@ -6,7 +6,7 @@ import json
 import logging
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
@@ -133,16 +133,23 @@ class ClaudeRegistry:
         clock.sleep(SETTLE_S)
         return self.read(pid)
 
-    def find_session(self, session_id: str) -> RegistryEntry | None:
-        if not session_id:
-            raise ValueError("session_id must be a non-empty string")
-        matches: list[RegistryEntry] = []
+    def entries(self) -> Iterator[RegistryEntry]:
+        """Every readable, well-formed entry, in file-name order."""
         for path in sorted(self.sessions_dir.glob("*.json")):
             if not (path.stem.isascii() and path.stem.isdigit()) or int(path.stem) <= 0:
                 continue
-            entry = self.read(int(path.stem))
-            if entry is not None and entry.session_id == session_id:
-                matches.append(entry)
+            try:
+                entry = self.read(int(path.stem))
+            except OSError as exc:
+                log.warning("cannot read Claude registry entry %s: %s", path, exc)
+                continue
+            if entry is not None:
+                yield entry
+
+    def find_session(self, session_id: str) -> RegistryEntry | None:
+        if not session_id:
+            raise ValueError("session_id must be a non-empty string")
+        matches = [entry for entry in self.entries() if entry.session_id == session_id]
         if not matches:
             return None
         if len(matches) > 1:

@@ -136,18 +136,7 @@ class Doctor:
     def _claude(self, name: str, config_dir: Path) -> Finding:
         if not config_dir.is_dir():
             return Finding("warn", name, f"Claude config dir {config_dir} does not exist")
-        registry = ClaudeRegistry(config_dir)
-        live = 0
-        for path in registry.sessions_dir.glob("*.json"):
-            if not (path.stem.isascii() and path.stem.isdigit()) or int(path.stem) <= 0:
-                continue
-            try:
-                entry = registry.read(int(path.stem))
-            except OSError as exc:
-                log.warning("cannot read Claude registry entry %s: %s", path, exc)
-                continue
-            if entry is not None and pid_alive(entry.pid):
-                live += 1
+        live = sum(1 for entry in ClaudeRegistry(config_dir).entries() if pid_alive(entry.pid))
         return Finding("ok", name, f"{config_dir}: {live} live session(s)")
 
     def _codex(self, spec: AgentSpec, home: Path) -> Iterator[Finding]:

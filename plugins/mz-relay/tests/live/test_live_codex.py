@@ -79,7 +79,7 @@ def test_a_peer_message_is_queued_into_a_renamed_codex_thread(
         CodexThreadMissing,
         find_rollout,
         resolve_thread,
-        rollout_has_nonce,
+        scan_rollout,
     )
     from mz_relay.clock import SystemClock
 
@@ -124,7 +124,7 @@ def test_a_peer_message_is_queued_into_a_renamed_codex_thread(
 
         def in_rollout() -> bool:
             path = find_rollout(live_codex_home, found)
-            return path is not None and rollout_has_nonce(path, msg_id)
+            return path is not None and scan_rollout(path, msg_id, 0).found
 
         assert wait_until(in_rollout, ROLLOUT_S, POLL_S), pane.screen()
         arrived = wait_until(lambda: rows.arrived_via("architect", msg_id, "codex"), TURN_S, POLL_S)

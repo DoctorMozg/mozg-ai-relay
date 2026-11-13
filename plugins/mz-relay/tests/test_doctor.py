@@ -233,13 +233,6 @@ def healthy(blank: DoctorSetup) -> DoctorSetup:
     return blank
 
 
-@pytest.fixture(scope="module")
-def dead_pid() -> int:
-    proc = subprocess.Popen([sys.executable, "-c", ""])
-    proc.wait()
-    return proc.pid
-
-
 @pytest.fixture
 def live_pid() -> Iterator[int]:
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])

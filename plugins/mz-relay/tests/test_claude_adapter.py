@@ -7,7 +7,6 @@ import json
 import logging
 import os
 import socket
-import subprocess
 import time
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
@@ -166,12 +165,6 @@ def make(relay_home: Path, make_fake: MakeFake) -> Callable[..., AdapterRig]:
         return AdapterRig(relay_home, make_fake(mode=mode, status=status), tools, clock)
 
     return build
-
-
-def dead_pid() -> int:
-    child = subprocess.Popen(["true"])
-    child.wait()
-    return child.pid
 
 
 def nonce_lines(path: Path) -> list[str]:
@@ -395,9 +388,9 @@ class TestDeliver:
         assert rig.fake.frames == []
 
     def test_dead_session_pid_is_unreachable_without_posting(
-        self, relay_home: Path, make_fake: MakeFake
+        self, relay_home: Path, make_fake: MakeFake, dead_pid: int
     ) -> None:
-        rig = AdapterRig(relay_home, make_fake(pid=dead_pid()), "full")
+        rig = AdapterRig(relay_home, make_fake(pid=dead_pid), "full")
         binding = rig.bind()
 
         assert rig.deliver(binding).outcome is Outcome.UNREACHABLE
