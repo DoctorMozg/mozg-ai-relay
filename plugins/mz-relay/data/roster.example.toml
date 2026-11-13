@@ -1,0 +1,47 @@
+version = 1
+
+[policy]
+hold_corporate_to_personal = true
+hop_budget = 4
+turn_cap = 20
+inbox_cap = 50
+default_ttl_s = 3600
+
+[agents.architect]
+harness = "claude"
+label = "personal"
+role = "architect"
+description = "Owns design decisions for the repo. Asks before changing public APIs."
+claude_config_dir = "~/.claude"
+may_send_to = ["builder", "reviewer"]
+
+[agents.builder]
+harness = "claude"
+label = "corporate"
+role = "builder"
+description = "Writes code in the corporate repo and sends diffs for review."
+claude_config_dir = "~/claude-corp/.claude"
+may_send_to = ["architect", "reviewer"]
+
+[agents.reviewer]
+harness = "codex"
+label = "personal"
+role = "reviewer"
+description = "Reviews diffs and replies approve or request-changes with reasons."
+codex_home = "~/.codex"
+codex_thread = "reviewer"
+
+[agents.scout]
+harness = "pi"
+label = "local"
+role = "scout"
+description = "Cheap searches and log digging on a local model. Never edits files."
+tools = "read_only"
+may_send_to = ["architect"]
+
+[agents.helper]
+harness = "opencode"
+label = "personal"
+role = "helper"
+description = "Answers questions about the docs site."
+cwd = "~/Work/docs-site"

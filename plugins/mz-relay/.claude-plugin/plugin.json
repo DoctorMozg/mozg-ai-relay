@@ -1,0 +1,19 @@
+{
+  "name": "mz-relay",
+  "version": "0.1.0",
+  "description": "Cross-harness agent messaging: roster names and roles, held corporate\u2192personal traffic, wake-up for Claude, Codex, Pi and OpenCode",
+  "author": {
+    "name": "Stanislav Gonorovskii"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/DoctorMozg/mozg-ai-relay",
+  "repository": "https://github.com/DoctorMozg/mozg-ai-relay",
+  "keywords": [
+    "messaging",
+    "multi-agent",
+    "mcp",
+    "codex",
+    "pi",
+    "opencode"
+  ]
+}

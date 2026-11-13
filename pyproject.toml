@@ -1,0 +1,47 @@
+[project]
+name = "mz-relay-tooling"
+version = "0.1.0"
+description = "Shared tooling and tests for the mz-relay plugin"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "mypy>=1.17,<2",
+  "pre-commit>=3.6,<5",
+  "pytest>=8.4,<10",
+  "pytest-xdist>=3.8,<4",
+  "ruff>=0.12,<0.16",
+]
+
+[tool.pytest.ini_options]
+# Plugins from the global environment cost startup time per process; the suites need only xdist.
+addopts = "--disable-plugin-autoload -p xdist -ra --strict-config --strict-markers --import-mode=importlib -m 'not live_claude and not live_codex and not live_pi and not live_opencode and not live_demo'"
+pythonpath = ["tools", "tests", "plugins/mz-relay/src"]
+# Each suite needs a process of its own (see the Makefile), so a bare pytest runs the repo tests.
+testpaths = ["tests"]
+markers = [
+  "live_claude: runs the real claude CLI; excluded from make check",
+  "live_codex: runs the real codex CLI; excluded from make check",
+  "live_pi: runs the real pi CLI; excluded from make check",
+  "live_opencode: runs the real opencode CLI; excluded from make check",
+  "live_demo: runs the real Claude and Codex demo; excluded from make check",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [".claude"]
+
+[tool.ruff.lint]
+select = ["ANN", "B", "E", "F", "I", "PT", "RUF", "SIM", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+explicit_package_bases = true
+mypy_path = [
+  "$MYPY_CONFIG_FILE_DIR/tools",
+  "$MYPY_CONFIG_FILE_DIR/tests",
+  "$MYPY_CONFIG_FILE_DIR/plugins/mz-relay/src",
+]
