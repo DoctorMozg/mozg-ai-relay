@@ -1,37 +1,23 @@
-# mz-relay
+# mz-relay plugin
 
-Agents in Claude Code (one or more accounts), Codex, Pi and OpenCode send each other messages by roster name. A local broker, `relayd`, holds the roster, queues the messages and wakes the receiving agent where its harness allows it.
+Agents in Claude Code, Codex, Pi and OpenCode message each other by roster name through a local broker, `relayd`. Version 0.1.0. Harness behaviours that no live test has confirmed are listed as UNTESTED in the repository README.
 
-## Status
+The documentation lives in the [repository README](../../README.md): architecture, install per harness, roster, guards, hold and approve, read-only roles, threat model, troubleshooting and development.
 
-Version 0.1.0, under construction. Only the scaffold is in place: the plugin manifest, the `bin/mz-relay` launcher and its `version` command. Messaging, the MCP server, hooks and the Pi, OpenCode and Codex adapters are not built yet.
+Contents of this folder:
 
-| Part                                    | State     |
-| --------------------------------------- | --------- |
-| Manifest, marketplace entry             | in place  |
-| `bin/mz-relay`, `mz-relay version`      | working   |
-| `relayd`, roster, MCP server            | not built |
-| Claude, Codex, Pi and OpenCode adapters | not built |
-
-## Requirements
-
-- Linux.
-- Python 3.12 or newer, standard library only. The launcher tries `$MZ_RELAY_PYTHON`, then `python3.14`, `python3.13`, `python3.12` and `python3` on `PATH`, and uses the first one that is 3.12 or newer.
-
-## Install
-
-```text
-/plugin install mz-relay --marketplace DoctorMozg/mozg-ai-relay
-```
-
-## Usage
+| Path                                                          | Holds                                                                      |
+| ------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `.claude-plugin/plugin.json`, `.mcp.json`, `hooks/hooks.json` | the Claude plugin: MCP server, wait hooks, gate, `relay_name` option       |
+| `bin/mz-relay`                                                | the launcher, which picks Python 3.12 or newer and runs `src/mz_relay`     |
+| `src/mz_relay/`                                               | the broker, CLI, MCP server and adapters (Python standard library only)    |
+| `adapters/pi/`, `adapters/opencode/`                          | the Pi extension and the OpenCode plugin (TypeScript, no npm dependencies) |
+| `data/roster.example.toml`                                    | an example roster                                                          |
+| `tests/`                                                      | unit, integration and `live_*` tests                                       |
 
 ```bash
 plugins/mz-relay/bin/mz-relay version
+plugins/mz-relay/bin/mz-relay doctor
 ```
 
-A missing or unknown command prints the usage and exits with status 2. No Python 3.12 or newer on `PATH` also exits with status 2, with a hint on stderr.
-
-## License
-
-MIT.
+Changes are in [CHANGELOG.md](CHANGELOG.md). License: MIT.

@@ -13,7 +13,8 @@ Claude Code plugin marketplace with one plugin, `mz-relay`: agents in Claude Cod
 
 - `uv sync`: install the dev group (mypy, pre-commit, pytest, pytest-xdist, ruff).
 - `uv run make check`: ruff, mypy, all test suites, `claude plugin validate . --strict`, pre-commit over tracked and untracked files.
-- `make fmt`, `make js` (TS adapter tests with `node --test`), `make live-<harness>` (real harness, excluded from `check`).
+- `make fmt`, `make js` (TS adapter tests with `node --test`), `make live-<harness>` (real harness, excluded from `check`); `make live-demo` runs the demo.
+- `plugins/mz-relay/bin/mz-relay doctor`: checks the local setup without starting relayd.
 
 ## Rules
 
