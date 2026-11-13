@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""A stand-in for `codex queue` that logs how it ran and acts as $FAKE_CODEX_MODE says:
+queue (default), deliver (also writes the rollout), fail, garbage, sleep, spawn (a child that
+outlives a kill of this process alone writes <spawn dir>/marker). Stdlib, Python 3.11."""
+
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+# tests/codex_rig.py rollout_path() builds the same name; a test pins that they agree.
+ROLLOUT_DIR = Path("sessions") / "2026" / "11" / "13"
+ROLLOUT_STAMP = "2026-11-13T10-00-00"
+# tests/codex_rig.py QUEUE_ID; real codex prints a uuid here.
+QUEUE_ID = "019a7c2e-5b1d-7f00-8c3a-2d4e6f8a0b1c"
+# Like a node wrapper's native binary: same process group, no pipes of its own.
+CHILD = """import pathlib, sys, time
+spawn_dir = pathlib.Path(sys.argv[1])
+(spawn_dir / "alive").touch()
+time.sleep(1.0)
+(spawn_dir / "marker").touch()
+"""
+
+
+def log_call() -> None:
+    target = os.environ.get("FAKE_CODEX_LOG")
+    if not target:
+        return
+    keep = ("CODEX_HOME", "HOME")
+    prefixes = ("CLAUDE", "FAKE_CODEX_")
+    env = {k: v for k, v in os.environ.items() if k in keep or k.startswith(prefixes)}
+    with open(target, "a", encoding="utf-8") as log:
+        log.write(json.dumps({"argv": sys.argv, "env": env}) + "\n")
+
+
+def option(name: str) -> str:
+    args = sys.argv[1:]
+    if name not in args or args.index(name) + 1 >= len(args):
+        sys.stderr.write(f"error: missing {name}\n")
+        sys.exit(2)
+    return args[args.index(name) + 1]
+
+
+def append_to_rollout(thread: str, message: str) -> None:
+    folder = Path(os.environ["CODEX_HOME"]) / ROLLOUT_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    item = {
+        "timestamp": "2026-11-13T10:00:01.000Z",
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": message}],
+        },
+    }
+    rollout = folder / f"rollout-{ROLLOUT_STAMP}-{thread}.jsonl"
+    with rollout.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(item) + "\n")
+
+
+def spawn_child() -> None:
+    spawn_dir = Path(os.environ["FAKE_CODEX_SPAWN_DIR"])
+    spawn_dir.mkdir(parents=True, exist_ok=True)
+    quiet = subprocess.DEVNULL
+    subprocess.Popen(
+        [sys.executable, "-c", CHILD, str(spawn_dir)], stdin=quiet, stdout=quiet, stderr=quiet
+    )
+
+
+def main() -> int:
+    log_call()
+    mode = os.environ.get("FAKE_CODEX_MODE", "queue")
+    if sys.argv[1:2] != ["queue"]:
+        sys.stderr.write(f"error: the fake only knows `queue`, got {sys.argv[1:]}\n")
+        return 2
+    thread, message = option("--thread"), option("--message")
+    if mode == "fail":
+        sys.stderr.write("error: thread busy\n")
+        return 1
+    if mode == "garbage":
+        print("ok")
+        return 0
+    if mode == "spawn":
+        spawn_child()
+    if mode in ("sleep", "spawn"):
+        time.sleep(5)
+    elif mode == "deliver":
+        append_to_rollout(thread, message)
+    elif mode != "queue":
+        sys.stderr.write(f"error: unknown FAKE_CODEX_MODE {mode!r}\n")
+        return 2
+    print(f"Queued message {QUEUE_ID} for thread {thread}.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,24 +1,29 @@
-"""Installing the Pi and OpenCode adapters, the OpenCode snippet, and the socket adapter wiring."""
+"""Installing the Pi and OpenCode adapters, the OpenCode and Codex snippets, and adapter wiring."""
 
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 from typing import Protocol
 
 import pytest
+from codex_rig import FAST_PATH, codex_job, codex_spec, fake_calls, index_line, write_index
 from conftest import BIN, PLUGIN
 from mz_relay import __version__
 from mz_relay.adapters import AdapterContext, build_adapters
 from mz_relay.adapters.claude import ClaudeAdapter
+from mz_relay.adapters.codex import CodexAdapter
 from mz_relay.adapters.socket_adapter import SocketAdapter
 from mz_relay.cli import main
 from mz_relay.clock import SystemClock
+from mz_relay.delivery import Outcome
 from mz_relay.install import (
     ADAPTER_MARKER,
     Installer,
     InstallError,
     InstallPlan,
+    codex_snippet,
     opencode_snippet,
 )
 from mz_relay.paths import Paths
@@ -34,11 +39,25 @@ PEER_AGENT = {
     "permission": {"edit": "deny", "bash": "deny", "webfetch": "deny", "task": "deny"},
 }
 KINDS = pytest.mark.parametrize("kind", ["pi", "opencode"])
+CODEX_COMMENT = (
+    '# Paste into <CODEX_HOME>/config.toml of the account that runs "reviewer".'
+    " Start Codex without -c."
+)
 
 DEFAULT_DEST = {
     "pi": Path(".pi") / "agent" / "extensions" / "mz-relay" / "index.ts",
     "opencode": Path(".config") / "opencode" / "plugins" / "mz-relay.ts",
 }
+
+
+def codex_snippet_lines(bin_path: Path) -> list[str]:
+    return [
+        CODEX_COMMENT,
+        "[mcp_servers.mz-relay]",
+        f'command = "{bin_path}"',
+        'args = ["mcp", "--harness", "codex"]',
+        'env = { MZ_RELAY_NAME = "reviewer" }',
+    ]
 
 
 class Install(Protocol):
@@ -248,6 +267,44 @@ class TestSnippet:
             opencode_snippet(tmp_path / "mz-relay", "")
 
 
+class TestCodexSnippet:
+    def test_the_snippet_is_the_comment_and_the_mcp_server_table(self, tmp_path: Path) -> None:
+        bin_path = tmp_path / "bin" / "mz-relay"
+
+        assert codex_snippet(bin_path, "reviewer").splitlines() == codex_snippet_lines(bin_path)
+
+    def test_the_snippet_parses_as_toml_into_the_mcp_server(self, tmp_path: Path) -> None:
+        bin_path = tmp_path / "bin" / "mz-relay"
+
+        parsed = tomllib.loads(codex_snippet(bin_path, "reviewer"))
+
+        assert parsed == {
+            "mcp_servers": {
+                "mz-relay": {
+                    "command": str(bin_path),
+                    "args": ["mcp", "--harness", "codex"],
+                    "env": {"MZ_RELAY_NAME": "reviewer"},
+                }
+            }
+        }
+
+    def test_a_bin_path_with_quotes_and_backslashes_survives_toml(self, tmp_path: Path) -> None:
+        bin_path = tmp_path / 'odd "dir" \\ x' / "mz-relay"
+
+        parsed = tomllib.loads(codex_snippet(bin_path, "reviewer"))
+
+        assert parsed["mcp_servers"]["mz-relay"]["command"] == str(bin_path)
+
+    @pytest.mark.parametrize("name", ["", "Bad Name", 'x" = 1'])
+    def test_a_name_that_is_not_a_roster_name_is_refused(self, tmp_path: Path, name: str) -> None:
+        with pytest.raises(ValueError, match="name"):
+            codex_snippet(tmp_path / "mz-relay", name)
+
+    def test_a_relative_bin_path_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="bin_path"):
+            codex_snippet(Path("bin/mz-relay"), "reviewer")
+
+
 @pytest.mark.usefixtures("agent_free_env")
 class TestCli:
     """The CLI installs from this plugin, so it needs the real adapter sources under adapters/."""
@@ -298,6 +355,25 @@ class TestCli:
         expected = opencode_snippet(BIN, "helper")
         assert capsys.readouterr().out == json.dumps(expected, indent=2) + "\n"
 
+    def test_snippet_codex_prints_the_toml_once(self, capsys: pytest.CaptureFixture[str]) -> None:
+        code = main(["snippet", "codex", "--name", "reviewer"])
+
+        out = capsys.readouterr().out
+        assert code == 0
+        assert out.splitlines() == codex_snippet_lines(BIN)
+        assert out.endswith("\n")
+        assert not out.endswith("\n\n")
+
+    def test_snippet_codex_with_a_bad_name_exits_2_and_prints_nothing(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        code = main(["snippet", "codex", "--name", "Bad Name"])
+
+        captured = capsys.readouterr()
+        assert code == 2
+        assert captured.out == ""
+        assert captured.err.startswith("mz-relay: ")
+
 
 @pytest.fixture
 def ctx(relay_paths: Paths, relay_home: Path) -> AdapterContext:
@@ -316,3 +392,22 @@ class TestBuildAdapters:
 
     def test_claude_keeps_its_claude_adapter(self, ctx: AdapterContext) -> None:
         assert isinstance(build_adapters(ctx)[Harness.CLAUDE], ClaudeAdapter)
+
+    def test_codex_gets_a_codex_adapter_that_runs_with_the_context_env_and_home(
+        self, relay_paths: Paths, tmp_path: Path
+    ) -> None:
+        pw_home, codex_home, log = tmp_path / "pw-home", tmp_path / "codex", tmp_path / "log"
+        pw_home.mkdir()
+        write_index(codex_home, index_line("t-new", "reviewer"))
+        base_env = {"PATH": FAST_PATH, "FAKE_CODEX_LOG": str(log), "FAKE_CODEX_MARKER": "m-ctx"}
+        ctx = AdapterContext(
+            paths=relay_paths, clock=SystemClock(), pw_home=pw_home, base_env=base_env
+        )
+
+        adapter = build_adapters(ctx)[Harness.CODEX]
+        result = adapter.deliver(codex_job(adapter, codex_spec(codex_home, pw_home)))
+
+        assert isinstance(adapter, CodexAdapter)
+        assert result.outcome is Outcome.HANDED_OFF
+        env = fake_calls(log)[0]["env"]
+        assert (env["HOME"], env["FAKE_CODEX_MARKER"]) == (str(pw_home), "m-ctx")

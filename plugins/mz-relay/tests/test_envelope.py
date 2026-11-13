@@ -126,6 +126,18 @@ class TestRender:
             "--- end ---",
         ]
 
+    def test_the_header_nonce_is_the_id_and_kind_that_open_the_id_line(
+        self, builder: AgentSpec
+    ) -> None:
+        from mz_relay.envelope import header_nonce
+
+        env = request_from_builder()
+
+        nonce = header_nonce(env)
+
+        assert nonce == f"id: {MSG_ID}  kind: request"
+        assert render_for_delivery(env, builder).splitlines()[2].startswith(nonce)
+
     def test_the_second_line_says_the_peer_is_not_the_user(self, builder: AgentSpec) -> None:
         line = render_for_delivery(request_from_builder(), builder).splitlines()[1]
         assert "not from your user" in line

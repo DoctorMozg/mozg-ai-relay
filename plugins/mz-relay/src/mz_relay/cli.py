@@ -24,7 +24,7 @@ from mz_relay.errors import (
     RelayError,
 )
 from mz_relay.hooks import run_hook
-from mz_relay.install import Installer, opencode_snippet, plugin_bin
+from mz_relay.install import Installer, codex_snippet, opencode_snippet, plugin_bin
 from mz_relay.launcher import PLUGIN_DIR, DaemonLauncher
 from mz_relay.paths import Paths, user_home
 from mz_relay.relayd import DEFAULT_IDLE_EXIT_S, run_daemon
@@ -143,7 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--force", action="store_true", help="overwrite a file that is not an mz-relay adapter"
     )
     snippet = commands.add_parser("snippet", help="print harness config entries for mz-relay")
-    snippet.add_argument("kind", choices=["opencode"])
+    snippet.add_argument("kind", choices=["opencode", "codex"])
     snippet.add_argument("--name", required=True, metavar="N", help="the agent's roster name")
     return parser
 
@@ -164,7 +164,7 @@ def main(argv: Sequence[str] | None = None, *, terminal: Terminal | None = None)
         # Hooks are advisory: run_hook logs its own failures and exits 0.
         return run_hook(args.hook_args, sys.stdin, sys.stdout, sys.stderr, os.environ)
     if args.command == "snippet":
-        return _snippet(args.name)
+        return _snippet(args.kind, args.name)
     try:
         paths = Paths.from_env(os.environ, uid=os.getuid(), pw_home=user_home())
     except PathError as exc:
@@ -213,13 +213,16 @@ def _install(paths: Paths, kind: str, dest: str | None, *, force: bool) -> int:
     return EXIT_OK
 
 
-def _snippet(name: str) -> int:
+def _snippet(kind: str, name: str) -> int:
     try:
-        snippet = opencode_snippet(plugin_bin(PLUGIN_DIR), name)
+        if kind == "codex":
+            text = codex_snippet(plugin_bin(PLUGIN_DIR), name)
+        else:
+            text = json.dumps(opencode_snippet(plugin_bin(PLUGIN_DIR), name), indent=2) + "\n"
     except ValueError as exc:
         sys.stderr.write(f"{PROG}: {exc}\n")
         return EXIT_USAGE
-    sys.stdout.write(json.dumps(snippet, indent=2) + "\n")
+    sys.stdout.write(text)
     return EXIT_OK
 
 

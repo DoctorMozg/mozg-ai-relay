@@ -56,8 +56,26 @@ def live_opencode_argv() -> list[str]:
 
 
 @pytest.fixture
+def live_codex_home() -> Path:
+    """The CODEX_HOME of a logged-in Codex account, from MZ_RELAY_LIVE_CODEX_HOME."""
+    home = Path(require_env("MZ_RELAY_LIVE_CODEX_HOME")).expanduser()
+    if not home.is_dir():
+        pytest.fail(f"MZ_RELAY_LIVE_CODEX_HOME {home} is not a directory")
+    return home
+
+
+@pytest.fixture
+def codex_bin() -> str:
+    """The codex CLI on PATH."""
+    found = shutil.which("codex")
+    if found is None:
+        pytest.skip("codex is not on PATH")
+    return found
+
+
+@pytest.fixture
 def tmux_bin() -> str:
-    """tmux, which the live Pi and OpenCode tests drive their TUIs through."""
+    """tmux, which the live Pi, OpenCode and Codex tests drive their TUIs through."""
     found = shutil.which("tmux")
     if found is None:
         pytest.skip("tmux is not on PATH")

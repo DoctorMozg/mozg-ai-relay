@@ -1,4 +1,4 @@
-"""Installs the Pi and OpenCode adapters and builds the OpenCode config snippet."""
+"""Installs the Pi and OpenCode adapters and builds the OpenCode and Codex config snippets."""
 
 from __future__ import annotations
 
@@ -99,12 +99,16 @@ def _is_ours(dest: Path) -> bool:
     return first_line.startswith(ADAPTER_MARKER.encode())
 
 
-def opencode_snippet(bin_path: Path, name: str) -> dict[str, object]:
-    """The opencode.json entries the OpenCode adapter's config hook would otherwise inject."""
+def _check_snippet_args(bin_path: Path, name: str) -> None:
     if not bin_path.is_absolute():
         raise ValueError(f"bin_path must be absolute, got {bin_path}")
     if not isinstance(name, str) or NAME_RE.fullmatch(name) is None:
         raise ValueError(f"name must be a roster agent name ({NAME_RE.pattern}), got {name!r}")
+
+
+def opencode_snippet(bin_path: Path, name: str) -> dict[str, object]:
+    """The opencode.json entries the OpenCode adapter's config hook would otherwise inject."""
+    _check_snippet_args(bin_path, name)
     return {
         "mcp": {
             MCP_SERVER_NAME: {
@@ -121,3 +125,25 @@ def opencode_snippet(bin_path: Path, name: str) -> dict[str, object]:
             }
         },
     }
+
+
+def codex_snippet(bin_path: Path, name: str) -> str:
+    """The config.toml table that starts the mz-relay MCP server in a Codex account, as TOML."""
+    _check_snippet_args(bin_path, name)
+    return (
+        f'# Paste into <CODEX_HOME>/config.toml of the account that runs "{name}".'
+        " Start Codex without -c.\n"
+        f"[mcp_servers.{MCP_SERVER_NAME}]\n"
+        f"command = {_toml_string(str(bin_path))}\n"
+        'args = ["mcp", "--harness", "codex"]\n'
+        f"env = {{ MZ_RELAY_NAME = {_toml_string(name)} }}\n"
+    )
+
+
+def _toml_string(value: str) -> str:
+    """A TOML basic string; control characters, which TOML forbids raw, become \\u escapes."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    escaped = "".join(
+        f"\\u{ord(char):04x}" if ord(char) < 0x20 or ord(char) == 0x7F else char for char in escaped
+    )
+    return f'"{escaped}"'

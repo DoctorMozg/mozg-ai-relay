@@ -1,5 +1,5 @@
-"""Shared pieces of the live Pi and OpenCode smokes: a TUI in a private tmux server, a tools-only
-peer, and one Store reader for the rows the tests wait on."""
+"""Shared pieces of the live Pi, OpenCode and Codex smokes: a TUI in a private tmux server,
+a tools-only peer, and one Store reader for the rows the tests wait on."""
 
 from __future__ import annotations
 
@@ -64,9 +64,12 @@ class TmuxPane:
             raise AssertionError(f"tmux {args[0]} failed: {exc.stderr.strip()}") from exc
         return done.stdout
 
-    def send_line(self, text: str) -> None:
-        """Types text literally, then presses Enter."""
+    def send_line(self, text: str, *, pause_s: float = 0.0) -> None:
+        """Types text literally, waits pause_s, then presses Enter."""
         self._run("send-keys", "-t", "main", "-l", "--", text)
+        # A TUI may still be completing a slash command when Enter arrives too soon.
+        if pause_s > 0:
+            time.sleep(pause_s)
         self._run("send-keys", "-t", "main", "Enter")
 
     def screen(self) -> str:
