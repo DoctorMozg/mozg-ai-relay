@@ -641,6 +641,11 @@ def relayd_status(path: Path) -> Message:
     return status
 
 
+def online_names(status: Message) -> set[str]:
+    """The agents a relayd `status` result lists as online."""
+    return {agent["name"] for agent in status.get("agents", []) if agent.get("online")}
+
+
 def daemon_pid(path: Path) -> int | None:
     pid = relayd_status(path).get("pid")
     return pid if isinstance(pid, int) else None

@@ -16,7 +16,16 @@ from typing import IO
 
 import pytest
 from fakes_claude import claude_agent
-from relay_rig import PLUGIN, Message, paths_in, reap, relayd_status, stop_daemon, wait_until
+from relay_rig import (
+    PLUGIN,
+    Message,
+    online_names,
+    paths_in,
+    reap,
+    relayd_status,
+    stop_daemon,
+    wait_until,
+)
 
 START_S = 180.0
 PEER_LINE_S = 60.0
@@ -35,10 +44,6 @@ def live_roster(cfg_a: Path, cfg_b: Path) -> str:
         + claude_agent(cfg_a, name="livea")
         + claude_agent(cfg_b, name="liveb", label="corporate", tools="read_only")
     )
-
-
-def online_names(status: Message) -> set[str]:
-    return {agent["name"] for agent in status.get("agents", []) if agent.get("online")}
 
 
 class StreamJsonClaude:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -32,6 +33,35 @@ def live_claude_dirs() -> tuple[Path, Path]:
     if dirs[0].resolve() == dirs[1].resolve():
         pytest.fail("MZ_RELAY_LIVE_CLAUDE_DIRS must name two different config dirs")
     return dirs
+
+
+def command_from(name: str) -> list[str]:
+    """The command line in the variable, split like a shell would; skips when it is unset."""
+    argv = shlex.split(require_env(name))
+    if not argv:
+        pytest.fail(f"{name} holds no command")
+    return argv
+
+
+@pytest.fixture
+def live_pi_argv() -> list[str]:
+    """The Pi command from MZ_RELAY_LIVE_PI, e.g. `pi -ne --no-session` plus model flags."""
+    return command_from("MZ_RELAY_LIVE_PI")
+
+
+@pytest.fixture
+def live_opencode_argv() -> list[str]:
+    """The OpenCode command from MZ_RELAY_LIVE_OPENCODE, e.g. `opencode -m <provider/model>`."""
+    return command_from("MZ_RELAY_LIVE_OPENCODE")
+
+
+@pytest.fixture
+def tmux_bin() -> str:
+    """tmux, which the live Pi and OpenCode tests drive their TUIs through."""
+    found = shutil.which("tmux")
+    if found is None:
+        pytest.skip("tmux is not on PATH")
+    return found
 
 
 @pytest.fixture

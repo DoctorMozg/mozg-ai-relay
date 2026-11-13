@@ -201,16 +201,17 @@ class RelayDaemon:
         requeued = self._engine.recover()
         if requeued:
             log.info("requeued %d messages a previous relayd left in delivery", requeued)
-        server = _Server(self._cfg, self._serve_connection)
-        threads = self._background_threads(server)
-        try:
-            for thread in threads:
-                thread.start()
-            log.info("relayd pid %d serving %s", os.getpid(), self._paths.socket)
-            with self._signals_stop():
+        # Handlers go in before the socket exists: a client may connect and send SIGTERM at once.
+        with self._signals_stop():
+            server = _Server(self._cfg, self._serve_connection)
+            threads = self._background_threads(server)
+            try:
+                for thread in threads:
+                    thread.start()
+                log.info("relayd pid %d serving %s", os.getpid(), self._paths.socket)
                 self._wait_for_stop()
-        finally:
-            self._shut_down(server, threads)
+            finally:
+                self._shut_down(server, threads)
         return EXIT_OK
 
     def _background_threads(self, server: _Server) -> list[threading.Thread]:

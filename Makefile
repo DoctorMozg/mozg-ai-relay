@@ -57,7 +57,7 @@ js:
 ifeq ($(strip $(JS_TESTS)),)
 	@echo "no TS tests"
 else
-	node --test $(JS_TESTS)
+	node --test --test-timeout=60000 $(JS_TESTS)
 endif
 
 validate: validate/. $(PLUGINS:%=validate/%)
