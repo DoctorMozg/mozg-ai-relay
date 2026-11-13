@@ -39,7 +39,7 @@ class PolicyFacts:
     parent: ParentFacts | None
     context_turns: int = 0
     context_cap: int | None = None
-    context_closed: bool = False
+    context_closed_by: str | None = None
     recipient_open: int = 0
 
 
@@ -88,6 +88,7 @@ class Policy:
             )
         context_id = self._context_id(req, parent)
         hop = self._hop(parent)
+        self._check_caps(req, recipient, context_id, facts)
         return Decision(
             status=Status.HELD if self._held(req.source, recipient) else Status.QUEUED,
             hop=hop,
@@ -148,6 +149,33 @@ class Policy:
                 {"hop": hop, "hop_budget": budget},
             )
         return hop
+
+    def _check_caps(
+        self, req: SendRequest, recipient: AgentSpec, context_id: str, facts: PolicyFacts
+    ) -> None:
+        # Runs before the hold, so a message that would be held is refused, not held.
+        if facts.context_closed_by is not None:
+            raise PolicyViolation(
+                "context_closed",
+                f"context {context_id} was closed by {facts.context_closed_by} with kind=done",
+            )
+        policy = self._roster.policy
+        cap = policy.turn_cap if facts.context_cap is None else facts.context_cap
+        # done is exempt so a context at its cap can still be closed.
+        if req.kind is not Kind.DONE and facts.context_turns >= cap:
+            raise PolicyViolation(
+                "turn_cap",
+                f"context {context_id} reached {cap} messages; "
+                f"ask your user to run: mz-relay context extend {context_id}",
+                {"turn_cap": cap},
+            )
+        if facts.recipient_open >= policy.inbox_cap:
+            raise PolicyViolation(
+                "inbox_full",
+                f"{recipient.name} has {facts.recipient_open} open messages "
+                f"(cap {policy.inbox_cap})",
+                {"inbox_cap": policy.inbox_cap},
+            )
 
     def _held(self, source: AgentSpec, recipient: AgentSpec) -> bool:
         return (

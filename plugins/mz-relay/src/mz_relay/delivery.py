@@ -12,7 +12,13 @@ from mz_relay.clock import Clock
 from mz_relay.envelope import Status, render_for_delivery
 from mz_relay.errors import BindingError
 from mz_relay.roster import AgentSpec, Harness, Roster
-from mz_relay.store import Registration, StatusChange, Store, StoredMessage
+from mz_relay.store import (
+    UNREACHABLE_PREFIX,
+    Registration,
+    StatusChange,
+    Store,
+    StoredMessage,
+)
 
 log = logging.getLogger(__name__)
 
@@ -26,6 +32,9 @@ CLAIM_S = 120.0
 DEFER_S = 2.0
 WAKEUP_STATUSES = frozenset({Status.QUEUED, Status.HANDED_OFF})
 NO_BINDING_DETAIL = "no live binding"
+# HELD waits for the user and DELIVERING for an adapter call in flight, so neither expires.
+EXPIRING = frozenset({Status.QUEUED, Status.HANDED_OFF, Status.FALLBACK, Status.LEASED})
+TTL_REASON = "ttl"
 
 
 class Outcome(StrEnum):
@@ -86,7 +95,7 @@ def pull_only_reason(to: str) -> str:
 
 
 def unreachable_reason(to: str, detail: str) -> str:
-    return f"unreachable: {detail}; waits for {to} to reconnect"
+    return f"{UNREACHABLE_PREFIX} {detail}; waits for {to} to reconnect"
 
 
 def retry_reason(attempt: int, detail: str) -> str:
@@ -130,9 +139,19 @@ class DeliveryEngine:
         return handled
 
     def sweep(self) -> int:
-        """Returns expired leases to FALLBACK and requeues claims a crashed delivery left behind."""
+        """Expires rows past their ttl, returns lapsed leases to FALLBACK, requeues stale claims."""
         store, now = self._deps.store, self._deps.clock.now()
         swept = 0
+        for row in store.past_ttl(EXPIRING, now):
+            change = StatusChange(Status.EXPIRED, reason=TTL_REASON)
+            if self._write(row, change, row.status, "ttl expiry"):
+                log.info(
+                    "%s to %s expired after its ttl of %d s",
+                    row.envelope.id,
+                    row.envelope.to,
+                    row.envelope.ttl_s,
+                )
+                swept += 1
         for row in store.with_status(frozenset({Status.LEASED})):
             if row.lease_until is not None and row.lease_until <= now:
                 change = StatusChange(Status.FALLBACK)

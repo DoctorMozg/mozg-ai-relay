@@ -40,6 +40,7 @@ SENT_LIMIT = 20
 WAIT_TIMEOUT_MAX_S = 3600
 WAIT_SLICE_S = 1.0
 HELD_PREVIEW_CHARS = 200
+CONTEXT_EXTEND_MAX = 100
 ACKABLE = frozenset({Status.DELIVERING, Status.HANDED_OFF, Status.DELIVERED, Status.LEASED})
 NOT_YET_DELIVERED = frozenset({Status.QUEUED, Status.FALLBACK, Status.HELD})
 # A parent the recipient never got cannot anchor a reply.
@@ -155,6 +156,11 @@ def _kind(value: object) -> str:
     return "null" if value is None else type(value).__name__
 
 
+def _status_entry(row: StoredMessage) -> dict[str, object]:
+    env = row.envelope
+    return {"id": env.id, "to": env.to, "status": row.status.value, "reason": row.reason}
+
+
 def _held_preview(body: str) -> str:
     if len(body) <= HELD_PREVIEW_CHARS:
         return body
@@ -183,6 +189,7 @@ class RelayService:
             "wait": self._wait,
             "confirm": self._confirm,
             "status": self._status,
+            "context_extend": self._context_extend,
             "shutdown": self._shutdown,
         }
 
@@ -308,7 +315,21 @@ class RelayService:
             in_reply_to=in_reply_to,
         )
         parent = None if in_reply_to is None else self._parent(in_reply_to, source.name)
-        decision = Policy(roster).check(req, PolicyFacts(parent=parent))
+        context = store.context_state(msg_id if parent is None else parent.context_id)
+        # A new chain's id becomes its context id, so reusing one would join a stranger's context.
+        if in_reply_to is None and context.turns:
+            log.info("send %s from %s refused: the id already names a context", msg_id, source.name)
+            raise EnvelopeError(
+                f"id {msg_id} already names a context; use a fresh id", {"field": "id"}
+            )
+        facts = PolicyFacts(
+            parent=parent,
+            context_turns=context.turns,
+            context_cap=context.turn_cap,
+            context_closed_by=context.closed_by,
+            recipient_open=store.open_count(req.to),
+        )
+        decision = Policy(roster).check(req, facts)
         now = self._deps.clock.now()
         env = Envelope(
             id=msg_id,
@@ -325,8 +346,16 @@ class RelayService:
             body=req.body,
         )
         due = now if decision.status is Status.QUEUED else None
+        # A held done closes only once the user approves it; see _decide.
+        closes = req.kind is Kind.DONE and decision.status is not Status.HELD
         try:
-            store.insert_message(env, decision.status, now, next_attempt_at=due)
+            store.insert_message(
+                env,
+                decision.status,
+                now,
+                next_attempt_at=due,
+                close_by=source.name if closes else None,
+            )
         except DuplicateMessage:
             # A concurrent resend of the same id won the insert; answer as its dedupe.
             raced = store.get(source.name, msg_id)
@@ -357,12 +386,13 @@ class RelayService:
             ttl_s=env.ttl_s,
             dedupe=dedupe,
         )
+        pending = self._deps.store.pending_notices(env.source)
         return {
             "id": env.id,
             "status": row.status.value,
             "recipient_online": online,
-            "notices_pending": 0,
-            "text": text,
+            "notices_pending": pending,
+            "text": texts.with_notice_suffix(text, pending),
         }
 
     def _peers(self, conn: ConnState, args: _Args) -> dict[str, object]:
@@ -379,7 +409,8 @@ class RelayService:
         ]
         result: dict[str, object] = {"agents": agents}
         if me is not None:
-            result["text"] = texts.peers_text(me.name, agents)
+            pending = self._deps.store.pending_notices(me.name)
+            result["text"] = texts.with_notice_suffix(texts.peers_text(me.name, agents), pending)
         return result
 
     def _inbox(self, conn: ConnState, args: _Args) -> dict[str, object]:
@@ -398,21 +429,17 @@ class RelayService:
             }
             for row in store.awaiting_ack(me.name)
         ]
-        sent: list[dict[str, object]] = [
-            {
-                "id": row.envelope.id,
-                "to": row.envelope.to,
-                "status": row.status.value,
-                "reason": row.reason,
-            }
-            for row in store.sent_by(me.name, SENT_LIMIT)
-        ]
-        text = texts.inbox_text([str(m["text"]) for m in messages], awaiting, sent)
+        sent = [_status_entry(row) for row in store.sent_by(me.name, SENT_LIMIT)]
+        notice_rows = store.notices_for(me.name)
+        notices = [_status_entry(row) for row in notice_rows]
+        store.mark_notified(notice_rows)
+        text = texts.inbox_text([str(m["text"]) for m in messages], awaiting, sent, notices)
         return {
             "messages": messages,
             "awaiting_ack": awaiting,
             "sent": sent,
-            "notices_pending": 0,
+            "notices": notices,
+            "notices_pending": store.pending_notices(me.name),
             "text": text,
         }
 
@@ -433,14 +460,14 @@ class RelayService:
             if store.update(source, msg_id, change, self._deps.clock.now(), expected=ACKABLE):
                 log.info("%s acked %s from %s", me.name, msg_id, source)
                 self._notify()
-                return self._ack_result(msg_id)
+                return self._ack_result(msg_id, me.name)
             current = store.get(source, msg_id)
             if current is None:
                 raise RuntimeError(f"message {msg_id} from {source} vanished during ack")
             log.info("stale ack for %s: row is %s", msg_id, current.status)
             row = current
         if row.status is Status.ACKED:
-            return self._ack_result(msg_id)
+            return self._ack_result(msg_id, me.name)
         if row.status in NOT_YET_DELIVERED:
             raise NotFound(
                 "not_found",
@@ -448,12 +475,13 @@ class RelayService:
             )
         raise NotFound("not_found", f"message {msg_id} is {row.status}; nothing to ack")
 
-    def _ack_result(self, msg_id: str) -> dict[str, object]:
+    def _ack_result(self, msg_id: str, acker: str) -> dict[str, object]:
+        pending = self._deps.store.pending_notices(acker)
         return {
             "id": msg_id,
             "status": Status.ACKED.value,
-            "notices_pending": 0,
-            "text": texts.ack_text(msg_id),
+            "notices_pending": pending,
+            "text": texts.with_notice_suffix(texts.ack_text(msg_id), pending),
         }
 
     def _held(self, conn: ConnState, args: _Args) -> dict[str, object]:
@@ -499,13 +527,22 @@ class RelayService:
             change = StatusChange(Status.QUEUED, next_attempt_at=now)
         else:
             change = StatusChange(Status.DENIED, reason=reason)
-        if not store.update(source, msg_id, change, now, expected=Status.HELD):
+        closes = decision == "approve" and row.envelope.kind is Kind.DONE
+        write = store.update_closing_context if closes else store.update
+        if not write(source, msg_id, change, now, expected=Status.HELD):
             current = store.get(source, msg_id)
             status = row.status if current is None else current.status
             raise NotFound("not_held", f"message {msg_id} is {status}, not held")
         log.info("user decided %s on %s from %s", decision, msg_id, source)
         self._notify()
         return {"id": msg_id, "status": change.status.value}
+
+    def _context_extend(self, conn: ConnState, args: _Args) -> dict[str, object]:
+        context_id = args.text("context_id")
+        by = args.integer("by", 1, CONTEXT_EXTEND_MAX)
+        default_cap = self._deps.roster.current().policy.turn_cap
+        turn_cap = self._deps.store.extend_context(context_id, by, default_cap)
+        return {"context_id": context_id, "turn_cap": turn_cap}
 
     def _wait(self, conn: ConnState, args: _Args) -> dict[str, object]:
         roster = self._deps.roster.current()

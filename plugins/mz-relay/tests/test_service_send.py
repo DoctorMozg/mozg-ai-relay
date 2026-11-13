@@ -1,9 +1,10 @@
-"""RelayService ops hello, register, send and peers over a real Store."""
+"""RelayService ops hello, register, send, peers and context_extend over a real Store."""
 
 from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -13,8 +14,9 @@ from mz_relay.envelope import Kind, Status
 from mz_relay.errors import ProtocolMismatch, RelayError
 from mz_relay.ids import new_id
 from mz_relay.protocol import PROTOCOL_VERSION
+from mz_relay.service import ConnState
 from mz_relay.store import StatusChange
-from relay_rig import ServiceRig, notified_within, pull_roster
+from relay_rig import DAVE_PI, ServiceRig, notified_within, pull_roster
 
 HELD_TEXT = "held {id} for user approval — ask your user to run: mz-relay approve {id}"
 RULES = """Rules:
@@ -471,3 +473,284 @@ class TestPeers:
         names = {a["name"] for a in rig.call(viewer, "peers")["agents"]}
 
         assert "tester" in names
+
+
+TURN_CAP_TEXT = (
+    "context {ctx} reached {cap} messages; ask your user to run: mz-relay context extend {ctx}"
+)
+
+
+@dataclass
+class Chat:
+    """Context `ctx`: alice's request to bob, then bob's replies in it."""
+
+    rig: ServiceRig
+    ctx: str
+    alice: tuple[ConnState, str]
+    bob: tuple[ConnState, str]
+
+    def bob_says(self, kind: str = "reply", body: str = "noted", **extra: object) -> dict[str, Any]:
+        conn, token = self.bob
+        return self.rig.send(conn, token, "alice", body, kind=kind, in_reply_to=self.ctx, **extra)
+
+    def refused(self, sender: tuple[ConnState, str], to: str, parent: str) -> RelayError:
+        conn, token = sender
+        with pytest.raises(RelayError) as err:
+            self.rig.send(conn, token, to, "one more", kind="reply", in_reply_to=parent)
+        return err.value
+
+
+def chat(rig: ServiceRig, turns: int) -> Chat:
+    alice, bob = rig.connect("alice"), rig.connect("bob")
+    ctx = rig.send(*alice, "bob")["id"]
+    built = Chat(rig, ctx, alice, bob)
+    for n in range(turns - 1):
+        built.bob_says(body=f"note {n}")
+    return built
+
+
+def extend(rig: ServiceRig, context_id: str, by: object) -> dict[str, Any]:
+    return rig.call(rig.hello(client="cli"), "context_extend", context_id=context_id, by=by)
+
+
+def with_policy(rig: ServiceRig, policy: str) -> None:
+    rig.write_roster(pull_roster(rig.home) + "\n[policy]\n" + policy)
+
+
+class TestTurnCap:
+    def test_twenty_messages_fit_a_context_and_the_twenty_first_is_refused(
+        self, rig: ServiceRig
+    ) -> None:
+        talk = chat(rig, 20)
+        rows = row_count(rig)
+
+        refused = talk.refused(talk.bob, "alice", talk.ctx)
+
+        assert (refused.code, refused.message) == (
+            "turn_cap",
+            TURN_CAP_TEXT.format(ctx=talk.ctx, cap=20),
+        )
+        assert row_count(rig) == rows
+
+    def test_held_replies_count_toward_the_cap(self, rig: ServiceRig) -> None:
+        alice, carol = rig.connect("alice"), rig.connect("carol")
+        ctx = rig.send(*alice, "carol")["id"]
+        for n in range(19):
+            held = rig.send(*carol, "alice", f"note {n}", kind="reply", in_reply_to=ctx)
+            assert held["status"] == "held"
+
+        with pytest.raises(RelayError) as err:
+            rig.send(*carol, "alice", "one more", kind="reply", in_reply_to=ctx)
+
+        assert err.value.code == "turn_cap"
+
+    def test_context_extend_raises_the_cap_and_the_next_message_fits(self, rig: ServiceRig) -> None:
+        talk = chat(rig, 20)
+
+        assert extend(rig, talk.ctx, 20) == {"context_id": talk.ctx, "turn_cap": 40}
+        assert talk.bob_says()["status"] == "queued"
+
+    def test_extensions_add_up(self, rig: ServiceRig) -> None:
+        talk = chat(rig, 20)
+        extend(rig, talk.ctx, 20)
+
+        assert extend(rig, talk.ctx, 5)["turn_cap"] == 45
+
+    def test_extending_an_unknown_context_is_not_found(self, rig: ServiceRig) -> None:
+        missing = new_id()
+
+        with pytest.raises(RelayError) as err:
+            extend(rig, missing, 20)
+
+        assert (err.value.code, err.value.message) == ("not_found", f"no context {missing}")
+
+    @pytest.mark.parametrize(("by", "cap"), [(1, 21), (100, 120)])
+    def test_extend_takes_1_to_100_more_turns(self, rig: ServiceRig, by: int, cap: int) -> None:
+        talk = chat(rig, 1)
+
+        assert extend(rig, talk.ctx, by)["turn_cap"] == cap
+
+    @pytest.mark.parametrize("by", [0, 101, -1, "5", 2.5, True])
+    def test_extend_refuses_any_other_by(self, rig: ServiceRig, by: object) -> None:
+        talk = chat(rig, 1)
+
+        with pytest.raises(RelayError) as err:
+            extend(rig, talk.ctx, by)
+
+        assert err.value.code == "invalid_args"
+
+    def test_extend_adds_to_the_roster_cap(self, rig: ServiceRig) -> None:
+        with_policy(rig, "turn_cap = 5\n")
+        talk = chat(rig, 5)
+        refused = talk.refused(talk.bob, "alice", talk.ctx)
+
+        extended = extend(rig, talk.ctx, 3)
+
+        assert refused.message == TURN_CAP_TEXT.format(ctx=talk.ctx, cap=5)
+        assert extended["turn_cap"] == 8
+        assert talk.bob_says()["status"] == "queued"
+
+
+class TestDone:
+    @pytest.mark.parametrize("turns", [2, 20], ids=["open", "at-the-cap"])
+    def test_done_is_accepted_and_closes_the_context_for_both_sides(
+        self, rig: ServiceRig, turns: int
+    ) -> None:
+        talk = chat(rig, turns)
+        done = talk.bob_says(kind="done", body="")
+        assert done["status"] == "queued"
+        rows = row_count(rig)
+
+        from_bob = talk.refused(talk.bob, "alice", talk.ctx)
+        from_alice = talk.refused(talk.alice, "bob", done["id"])
+
+        closed = f"context {talk.ctx} was closed by bob with kind=done"
+        assert (from_bob.code, from_bob.message) == ("context_closed", closed)
+        assert (from_alice.code, from_alice.message) == ("context_closed", closed)
+        assert row_count(rig) == rows
+
+    def test_a_resend_of_done_after_a_restart_is_a_dedupe_not_a_refusal(
+        self, rig: ServiceRig
+    ) -> None:
+        talk = chat(rig, 20)
+        done_id = new_id()
+        first = talk.bob_says(kind="done", body="", id=done_id)
+        rig.close()
+
+        with ServiceRig(rig.home) as reopened:
+            again = reopened.send(
+                reopened.hello(),
+                talk.bob[1],
+                "alice",
+                "",
+                kind="done",
+                in_reply_to=talk.ctx,
+                id=done_id,
+            )
+            with pytest.raises(RelayError) as err:
+                reopened.send(
+                    reopened.hello(),
+                    talk.bob[1],
+                    "alice",
+                    "more",
+                    kind="reply",
+                    in_reply_to=talk.ctx,
+                )
+
+        assert (again["id"], again["status"]) == (first["id"], first["status"])
+        assert err.value.code == "context_closed"
+
+
+class TestHeldDone:
+    """carol (corporate) closes alice's request with a done, which is held for the user."""
+
+    @pytest.fixture
+    def held_done(self, rig: ServiceRig) -> tuple[str, str, tuple[ConnState, str]]:
+        alice, carol = rig.connect("alice"), rig.connect("carol")
+        ctx = rig.send(*alice, "carol")["id"]
+        done = rig.send(*carol, "alice", "", kind="done", in_reply_to=ctx)
+        assert done["status"] == "held"
+        return ctx, done["id"], carol
+
+    def decide(self, rig: ServiceRig, msg_id: str, decision: str) -> None:
+        args = {"id": msg_id, "source": "carol", "decision": decision}
+        rig.call(rig.hello(client="cli"), "decide", **args)
+
+    def test_a_held_done_leaves_the_context_open(
+        self, rig: ServiceRig, held_done: tuple[str, str, tuple[ConnState, str]]
+    ) -> None:
+        ctx, _, carol = held_done
+
+        result = rig.send(*carol, "alice", "one more", kind="reply", in_reply_to=ctx)
+
+        assert result["status"] == "held"
+
+    def test_approving_a_held_done_closes_the_context(
+        self, rig: ServiceRig, held_done: tuple[str, str, tuple[ConnState, str]]
+    ) -> None:
+        ctx, done_id, carol = held_done
+        self.decide(rig, done_id, "approve")
+
+        with pytest.raises(RelayError) as err:
+            rig.send(*carol, "alice", "one more", kind="reply", in_reply_to=ctx)
+
+        assert (err.value.code, err.value.message) == (
+            "context_closed",
+            f"context {ctx} was closed by carol with kind=done",
+        )
+
+    def test_denying_a_held_done_leaves_the_context_open(
+        self, rig: ServiceRig, held_done: tuple[str, str, tuple[ConnState, str]]
+    ) -> None:
+        ctx, done_id, carol = held_done
+        self.decide(rig, done_id, "deny")
+
+        result = rig.send(*carol, "alice", "one more", kind="reply", in_reply_to=ctx)
+
+        assert result["status"] == "held"
+
+
+class TestInboxCap:
+    def test_the_51st_open_message_is_refused_until_the_recipient_acks_one(
+        self, rig: ServiceRig
+    ) -> None:
+        alice, (bob_conn, bob) = rig.connect("alice"), rig.connect("bob")
+        for n in range(50):
+            rig.send(*alice, "bob", f"task {n}")
+
+        rows = row_count(rig)
+        with pytest.raises(RelayError) as full:
+            rig.send(*alice, "bob", "task 50")
+        assert row_count(rig) == rows
+        [pulled] = rig.call(bob_conn, "inbox", token=bob, limit=1)["messages"]
+        with pytest.raises(RelayError) as still_full:
+            rig.send(*alice, "bob", "task 50")
+        rig.call(bob_conn, "ack", token=bob, id=pulled["envelope"]["id"])
+
+        assert (full.value.code, full.value.message) == (
+            "inbox_full",
+            "bob has 50 open messages (cap 50)",
+        )
+        assert still_full.value.code == "inbox_full"
+        assert rig.send(*alice, "bob", "task 50")["status"] == "queued"
+
+    def test_held_messages_do_not_fill_an_inbox(self, rig: ServiceRig) -> None:
+        with_policy(rig, "inbox_cap = 3\n")
+        carol, bob = rig.connect("carol"), rig.connect("bob")
+        for n in range(3):
+            assert rig.send(*carol, "alice", f"audit {n}")["status"] == "held"
+
+        assert rig.send(*bob, "alice", "fyi")["status"] == "queued"
+
+
+class TestNewChainIds:
+    """A new chain's id becomes its context id, so it may not name a context that exists."""
+
+    @pytest.mark.parametrize(("kind", "body"), [("done", ""), ("request", "hi")])
+    def test_a_new_chain_reusing_a_context_id_is_refused_and_the_context_stays_open(
+        self, rig: ServiceRig, kind: str, body: str
+    ) -> None:
+        rig.write_roster(pull_roster(rig.home) + DAVE_PI)
+        alice, bob, dave = rig.connect("alice"), rig.connect("bob"), rig.connect("dave")
+        ctx = rig.send(*alice, "bob")["id"]
+        rows = row_count(rig)
+
+        with pytest.raises(RelayError) as err:
+            rig.send(*dave, "alice", body, kind=kind, id=ctx)
+
+        assert err.value.code == "invalid_args"
+        assert err.value.data.get("field") == "id"
+        assert ctx in err.value.message
+        assert row_count(rig) == rows
+        reply = rig.send(*bob, "alice", "answer", kind="reply", in_reply_to=ctx)
+        assert reply["status"] == "queued"
+
+    def test_the_senders_own_resend_of_the_root_is_still_a_dedupe(self, rig: ServiceRig) -> None:
+        alice = rig.connect("alice")
+        msg_id = new_id()
+        first = rig.send(*alice, "bob", id=msg_id)
+
+        again = rig.send(*alice, "bob", id=msg_id)
+
+        assert again == first
+        assert row_count(rig) == 1

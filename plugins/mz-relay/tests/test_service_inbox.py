@@ -1,4 +1,4 @@
-"""RelayService ops inbox, ack, held, decide, wait, confirm and status."""
+"""RelayService ops inbox, ack, held, decide, wait, confirm and status; sender notices."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 from mz_relay import __version__
+from mz_relay.delivery import DeliveryEngine, EngineDeps
 from mz_relay.envelope import Status
 from mz_relay.errors import RelayError
 from mz_relay.ids import new_id
@@ -366,9 +367,11 @@ class TestHeldLookup:
     ) -> None:
         conn_c, carol = rig.connect("carol")
         conn_a, alice = rig.connect("alice")
+        conn_b, bob = rig.connect("bob")
         shared = sent_id(rig, conn_c, carol, "alice")
+        question = sent_id(rig, conn_b, bob, "alice")
         rig.clock.advance(1.0)
-        rig.send(conn_a, alice, "bob", id=shared)
+        rig.send(conn_a, alice, "bob", id=shared, kind="reply", in_reply_to=question)
 
         [held] = rig.call(rig.hello(client="cli"), "held", id=shared)["messages"]
 
@@ -385,11 +388,14 @@ class TestDecideBySource:
         rig = two_corporate
         conn_e, erin = rig.connect("erin")
         conn_c, carol = rig.connect("carol")
+        conn_a, alice = rig.connect("alice")
+        question = sent_id(rig, conn_a, alice, "carol")
         shared = new_id()
-        # carol's row is the newer one, so a lookup by id alone would pick it.
+        # carol's row is the newer one, so a lookup by id alone would pick it. Only a reply
+        # may reuse an id that already names a context.
         rig.send(conn_e, erin, "alice", id=shared)
         rig.clock.advance(1.0)
-        rig.send(conn_c, carol, "alice", id=shared)
+        rig.send(conn_c, carol, "alice", id=shared, kind="reply", in_reply_to=question)
 
         result = rig.call(
             rig.hello(client="cli"), "decide", id=shared, source="erin", decision=decision
@@ -514,3 +520,147 @@ class TestWaitConfirm:
         assert agents["bob"]["harness"] == "opencode"
         nonzero = {k: v for k, v in result["counts"].items() if v}
         assert nonzero == {"queued": 1, "held": 1}
+
+
+SUFFIX = "\n({n} undelivered notice(s) — call inbox)"
+UNREACHABLE = "unreachable: socket gone; waits for bob to reconnect"
+PULL_ONLY = "pull-only: bob has no wake-up channel; waits for its inbox call"
+
+
+def expire(rig: ServiceRig, source: str, msg_id: str) -> None:
+    """The write the engine's sweep makes when the row's ttl has passed."""
+    force_status(rig, source, msg_id, StatusChange(Status.EXPIRED, reason="ttl"))
+
+
+def sweep_past_ttl(rig: ServiceRig) -> None:
+    """Moves the clock past the default ttl and runs the engine's sweep, as relayd does."""
+    rig.clock.advance(3601)
+    deps = EngineDeps(store=rig.store, roster=rig.roster.current, adapters={}, clock=rig.clock)
+    DeliveryEngine(deps).sweep()
+
+
+def notices_block(text: str) -> str | None:
+    blocks = [block for block in text.split("\n\n") if block.startswith("notices:")]
+    assert len(blocks) <= 1, f"more than one notices block in {text!r}"
+    return blocks[0] if blocks else None
+
+
+class TestNotices:
+    def test_an_expiry_is_a_notice_shown_once(self, rig: ServiceRig) -> None:
+        conn, alice = rig.connect("alice")
+        msg_id = sent_id(rig, conn, alice, "bob")
+        sweep_past_ttl(rig)
+
+        first = rig.call(conn, "inbox", token=alice)
+        second = rig.call(conn, "inbox", token=alice)
+
+        assert first["notices"] == [
+            {"id": msg_id, "to": "bob", "status": "expired", "reason": "ttl"}
+        ]
+        assert notices_block(first["text"]) == f"notices:\n- {msg_id} → bob: expired (ttl)"
+        assert first["notices_pending"] == 0
+        assert second["notices"] == []
+        assert notices_block(second["text"]) is None
+
+    def test_an_undeliverable_row_is_a_notice_with_its_reason(self, rig: ServiceRig) -> None:
+        conn, alice = rig.connect("alice")
+        msg_id = sent_id(rig, conn, alice, "bob")
+        exhausted = StatusChange(Status.UNDELIVERABLE, reason="codex not found: /nope")
+        force_status(rig, "alice", msg_id, exhausted)
+
+        text = rig.call(conn, "inbox", token=alice)["text"]
+
+        assert notices_block(text) == (
+            f"notices:\n- {msg_id} → bob: undeliverable (codex not found: /nope)"
+        )
+
+    def test_a_denied_row_is_a_notice_for_its_sender(self, rig: ServiceRig) -> None:
+        conn, carol = rig.connect("carol")
+        msg_id = sent_id(rig, conn, carol, "alice")
+        decide = {"id": msg_id, "source": "carol", "decision": "deny", "reason": "not now"}
+        rig.call(rig.hello(client="cli"), "decide", **decide)
+
+        text = rig.call(conn, "inbox", token=carol)["text"]
+
+        assert notices_block(text) == f"notices:\n- {msg_id} → alice: denied (not now)"
+
+    def test_an_unreachable_row_is_a_notice_and_its_later_expiry_is_another(
+        self, rig: ServiceRig
+    ) -> None:
+        conn, alice = rig.connect("alice")
+        msg_id = sent_id(rig, conn, alice, "bob")
+        force_status(rig, "alice", msg_id, StatusChange(Status.QUEUED, reason=UNREACHABLE))
+
+        shown = [notices_block(rig.call(conn, "inbox", token=alice)["text"]) for _ in range(2)]
+        expire(rig, "alice", msg_id)
+        shown += [notices_block(rig.call(conn, "inbox", token=alice)["text"]) for _ in range(2)]
+
+        assert shown == [
+            f"notices:\n- {msg_id} → bob: queued ({UNREACHABLE})",
+            None,
+            f"notices:\n- {msg_id} → bob: expired (ttl)",
+            None,
+        ]
+
+    def test_delivered_acked_retried_and_pull_only_rows_are_not_notices(
+        self, rig: ServiceRig
+    ) -> None:
+        conn, alice = rig.connect("alice")
+        ids = [sent_id(rig, conn, alice, "bob", body=f"task {n}") for n in range(4)]
+        force_status(rig, "alice", ids[0], StatusChange(Status.DELIVERED, via="inbox"))
+        force_status(rig, "alice", ids[1], StatusChange(Status.ACKED))
+        retry = StatusChange(Status.QUEUED, reason="attempt 1 failed: socket busy")
+        force_status(rig, "alice", ids[2], retry)
+        force_status(rig, "alice", ids[3], StatusChange(Status.QUEUED, reason=PULL_ONLY))
+
+        result = rig.call(conn, "inbox", token=alice)
+
+        assert result["notices"] == []
+        assert notices_block(result["text"]) is None
+
+    def test_notices_go_to_the_sender_only(self, rig: ServiceRig) -> None:
+        conn_a, alice = rig.connect("alice")
+        conn_b, bob = rig.connect("bob")
+        expire(rig, "alice", sent_id(rig, conn_a, alice, "bob"))
+
+        result = rig.call(conn_b, "inbox", token=bob)
+
+        assert result["notices"] == []
+        assert rig.send(conn_b, bob, "alice")["notices_pending"] == 0
+
+
+class TestNoticeSuffix:
+    def test_send_counts_pending_notices_until_the_inbox_shows_them(self, rig: ServiceRig) -> None:
+        conn, alice = rig.connect("alice")
+        rig.connect("bob")
+        for body in ("first", "second"):
+            expire(rig, "alice", sent_id(rig, conn, alice, "bob", body=body))
+
+        before = rig.send(conn, alice, "bob")
+        rig.call(conn, "inbox", token=alice)
+        after = rig.send(conn, alice, "bob")
+
+        assert before["notices_pending"] == 2
+        assert before["text"] == f"queued {before['id']} for bob" + SUFFIX.format(n=2)
+        assert after["notices_pending"] == 0
+        assert after["text"] == f"queued {after['id']} for bob"
+
+    def test_ack_carries_the_pending_count_and_the_suffix(self, rig: ServiceRig) -> None:
+        conn_a, alice = rig.connect("alice")
+        conn_b, bob = rig.connect("bob")
+        expire(rig, "alice", sent_id(rig, conn_a, alice, "bob"))
+        incoming = sent_id(rig, conn_b, bob, "alice")
+        force_status(rig, "bob", incoming, StatusChange(Status.DELIVERED, via="inbox"))
+
+        result = rig.call(conn_a, "ack", token=alice, id=incoming)
+
+        assert result["notices_pending"] == 1
+        assert result["text"] == f"acked {incoming}" + SUFFIX.format(n=1)
+
+    def test_peers_text_ends_with_the_suffix(self, rig: ServiceRig) -> None:
+        conn, alice = rig.connect("alice")
+        expire(rig, "alice", sent_id(rig, conn, alice, "bob"))
+
+        text = rig.call(conn, "peers", token=alice)["text"]
+
+        assert text.endswith(SUFFIX.format(n=1))

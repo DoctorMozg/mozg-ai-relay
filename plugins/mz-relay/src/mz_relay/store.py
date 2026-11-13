@@ -6,14 +6,14 @@ import json
 import logging
 import sqlite3
 import threading
-from collections.abc import Collection, Iterator
+from collections.abc import Collection, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 from mz_relay.clock import iso_utc
-from mz_relay.envelope import Envelope, Kind, Status
-from mz_relay.errors import StoreError
+from mz_relay.envelope import TERMINAL, Envelope, Kind, Status
+from mz_relay.errors import NotFound, StoreError
 from mz_relay.roster import Harness, Label
 
 log = logging.getLogger(__name__)
@@ -56,6 +56,9 @@ OPEN_STATUSES = (
 PULLABLE = frozenset({Status.QUEUED, Status.FALLBACK})
 AWAITING_ACK = frozenset({Status.DELIVERED, Status.HANDED_OFF, Status.LEASED})
 FALLBACK_MODE = "fallback"
+UNREACHABLE_PREFIX = "unreachable:"
+# Terminal statuses a sender hears about once; unreachable parked rows are notices too.
+NOTICE_STATUSES = frozenset({Status.UNDELIVERABLE, Status.EXPIRED, Status.DENIED})
 
 
 @dataclass(frozen=True)
@@ -83,6 +86,13 @@ class StatusChange:
     next_attempt_at: float | None = None
     handed_off_at: float | None = None
     lease_until: float | None = None
+
+
+@dataclass(frozen=True)
+class ContextState:
+    turns: int
+    turn_cap: int | None
+    closed_by: str | None
 
 
 @dataclass(frozen=True)
@@ -137,6 +147,12 @@ def _check_recipients(recipients: Collection[str]) -> tuple[str, ...]:
     for name in names:
         _check_name(name, "recipient")
     return names
+
+
+def _check_change(change: StatusChange, expected: Status | frozenset[Status]) -> tuple[str, ...]:
+    if not isinstance(change, StatusChange) or not isinstance(change.status, Status):
+        raise ValueError(f"change must be a StatusChange with a Status, got {change!r}")
+    return _status_set(expected, "expected")
 
 
 def _message(row: sqlite3.Row) -> StoredMessage:
@@ -274,8 +290,15 @@ class Store:
             self._conn.close()
 
     def insert_message(
-        self, env: Envelope, status: Status, now: float, *, next_attempt_at: float | None
+        self,
+        env: Envelope,
+        status: Status,
+        now: float,
+        *,
+        next_attempt_at: float | None,
+        close_by: str | None = None,
     ) -> None:
+        """Inserts the row and counts a turn; close_by also closes the context, as a done does."""
         if not isinstance(env, Envelope):
             raise ValueError(f"env must be an Envelope, got {type(env).__name__}")
         if not isinstance(status, Status):
@@ -312,6 +335,8 @@ class Store:
                 "ON CONFLICT(context_id) DO UPDATE SET turns = turns + 1",
                 (env.context_id,),
             )
+            if close_by is not None:
+                self._close_context(env.context_id, close_by, now)
 
     def get(self, source: str, msg_id: str) -> StoredMessage | None:
         found = self._select("source = ? AND id = ?", (source, msg_id))
@@ -336,11 +361,29 @@ class Store:
         expected: Status | frozenset[Status],
     ) -> bool:
         """Writes change only while the row's status is in expected; False when it no longer is."""
-        if not isinstance(change, StatusChange) or not isinstance(change.status, Status):
-            raise ValueError(f"change must be a StatusChange with a Status, got {change!r}")
-        allowed = _status_set(expected, "expected")
+        allowed = _check_change(change, expected)
         with self._transaction():
             return self._apply(source, msg_id, change, now, allowed)
+
+    def update_closing_context(
+        self,
+        source: str,
+        msg_id: str,
+        change: StatusChange,
+        now: float,
+        *,
+        expected: Status | frozenset[Status],
+    ) -> bool:
+        """update, and when it writes, closes the row's context naming its source, as one commit."""
+        allowed = _check_change(change, expected)
+        with self._transaction() as conn:
+            if not self._apply(source, msg_id, change, now, allowed):
+                return False
+            row = conn.execute(
+                "SELECT context_id FROM messages WHERE source = ? AND id = ?", (source, msg_id)
+            ).fetchone()
+            self._close_context(str(row["context_id"]), source, now)
+        return True
 
     def _apply(
         self, source: str, msg_id: str, change: StatusChange, now: float, allowed: tuple[str, ...]
@@ -352,6 +395,9 @@ class Store:
             "lease_until = ?",
             "updated_at = ?",
         ]
+        # A row reaching a terminal status is news to its sender, even after an earlier notice.
+        if change.status in TERMINAL:
+            sets.append("notified = 0")
         params: list[object] = [
             change.status.value,
             change.reason,
@@ -437,6 +483,15 @@ class Store:
                 (recipient, *open_values, Status.DELIVERED.value),
             ).fetchone()
         return int(row[0])
+
+    def past_ttl(self, statuses: frozenset[Status], now: float) -> list[StoredMessage]:
+        """Rows in the statuses whose own ttl ended before now."""
+        allowed = _status_set(statuses, "statuses")
+        return self._select(
+            f"status IN ({_placeholders(len(allowed))}) AND created_at + ttl_s < ?",
+            (*allowed, now),
+            "ORDER BY created_at, rowid",
+        )
 
     def wake_recipient(self, recipient: str, now: float) -> int:
         """Makes the recipient's parked QUEUED rows due now; returns how many."""
@@ -533,6 +588,48 @@ class Store:
             "source = ?", (source, limit), "ORDER BY created_at DESC, rowid DESC LIMIT ?"
         )
 
+    def _notice_where(self, source: str) -> tuple[str, tuple[object, ...]]:
+        _check_name(source, "source")
+        statuses = _status_set(NOTICE_STATUSES, "notice statuses")
+        # GLOB, unlike LIKE, matches the prefix case-sensitively and without wildcards.
+        where = (
+            f"source = ? AND notified = 0 AND (status IN ({_placeholders(len(statuses))}) "
+            "OR (status = ? AND reason GLOB ?))"
+        )
+        return where, (source, *statuses, Status.QUEUED.value, UNREACHABLE_PREFIX + "*")
+
+    def notices_for(self, source: str) -> list[StoredMessage]:
+        """The sender's rows it has not been told about yet, oldest first."""
+        where, params = self._notice_where(source)
+        return self._select(where, params, "ORDER BY created_at, rowid")
+
+    def pending_notices(self, source: str) -> int:
+        where, params = self._notice_where(source)
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT count(*) FROM messages WHERE {where}", params
+            ).fetchone()
+        return int(row[0])
+
+    def mark_notified(self, rows: Sequence[StoredMessage]) -> int:
+        """Marks rows shown to their sender; a row that changed since it was read stays unmarked."""
+        if not all(isinstance(row, StoredMessage) for row in rows):
+            raise ValueError(f"rows must be StoredMessages, got {rows!r}")
+        if not rows:
+            return 0
+        with self._transaction() as conn:
+            marked = sum(
+                conn.execute(
+                    "UPDATE messages SET notified = 1 "
+                    "WHERE source = ? AND id = ? AND status = ? AND reason IS ?",
+                    (row.envelope.source, row.envelope.id, row.status.value, row.reason),
+                ).rowcount
+                for row in rows
+            )
+        if marked:
+            log.debug("marked %d notices as shown", marked)
+        return marked
+
     def upsert_registration(self, reg: Registration) -> None:
         if not isinstance(reg, Registration):
             raise ValueError(f"reg must be a Registration, got {type(reg).__name__}")
@@ -611,15 +708,46 @@ class Store:
             ).fetchall()
         return {str(row[0]) for row in rows}
 
-    def context(self, context_id: str) -> tuple[int, int | None, bool]:
-        """Turns, turn-cap override and closed flag; a context never written has no turns."""
+    def context_state(self, context_id: str) -> ContextState:
+        """Turns, turn-cap override and closer; a context never written has no turns."""
         _check_name(context_id, "context_id")
         with self._lock:
             row = self._conn.execute(
-                "SELECT turns, turn_cap, closed_at FROM contexts WHERE context_id = ?",
+                "SELECT turns, turn_cap, closed_at, closed_by FROM contexts WHERE context_id = ?",
                 (context_id,),
             ).fetchone()
         if row is None:
-            return (0, None, False)
+            return ContextState(turns=0, turn_cap=None, closed_by=None)
         turn_cap = None if row["turn_cap"] is None else int(row["turn_cap"])
-        return (int(row["turns"]), turn_cap, row["closed_at"] is not None)
+        closed_by = None if row["closed_at"] is None else str(row["closed_by"])
+        return ContextState(turns=int(row["turns"]), turn_cap=turn_cap, closed_by=closed_by)
+
+    def _close_context(self, context_id: str, by: str, now: float) -> None:
+        # Runs inside the caller's transaction; the first closer stays the one named.
+        _check_name(by, "closer")
+        closed = self._conn.execute(
+            "UPDATE contexts SET closed_at = ?, closed_by = ? "
+            "WHERE context_id = ? AND closed_at IS NULL",
+            (now, by, context_id),
+        ).rowcount
+        if closed:
+            log.info("context %s closed by %s", context_id, by)
+
+    def extend_context(self, context_id: str, by: int, default_cap: int) -> int:
+        """Adds `by` to the context's cap, or to default_cap without an override; the new cap."""
+        _check_name(context_id, "context_id")
+        for value, what in ((by, "by"), (default_cap, "default_cap")):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{what} must be a positive int, got {value!r}")
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT turn_cap FROM contexts WHERE context_id = ?", (context_id,)
+            ).fetchone()
+            if row is None:
+                raise NotFound("not_found", f"no context {context_id}")
+            base = default_cap if row["turn_cap"] is None else int(row["turn_cap"])
+            conn.execute(
+                "UPDATE contexts SET turn_cap = ? WHERE context_id = ?", (base + by, context_id)
+            )
+        log.info("context %s turn cap raised by %d to %d", context_id, by, base + by)
+        return base + by

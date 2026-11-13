@@ -1,4 +1,4 @@
-"""Policy.check: routing, hold, reply chains, hop budget and body limits."""
+"""Policy.check: routing, hold, reply chains, hop budget, body limits, caps and closed contexts."""
 
 from __future__ import annotations
 
@@ -54,6 +54,11 @@ def parent(hop: int, *, context_id: str = PARENT_ID, source: str = "builder") ->
 
 def reply_facts(hop: int, **kwargs: str) -> PolicyFacts:
     return PolicyFacts(parent=parent(hop, **kwargs))
+
+
+def context_facts(*, parent_hop: int = 0, **changes: object) -> PolicyFacts:
+    """Facts for a reply into PARENT_ID's context, with the given context and inbox."""
+    return dataclasses.replace(reply_facts(parent_hop), **cast("dict[str, Any]", changes))
 
 
 @pytest.fixture
@@ -324,3 +329,151 @@ class TestBody:
             policy.check(req, NO_FACTS)
 
         assert caught.value.code == "invalid_args"
+
+
+TURN_CAP_TEXT = (
+    "context {ctx} reached {cap} messages; ask your user to run: mz-relay context extend {ctx}"
+)
+CLOSED_TEXT = f"context {PARENT_ID} was closed by builder with kind=done"
+
+
+def reply(roster: Roster, kind: Kind = Kind.REPLY, source: str = "architect") -> SendRequest:
+    to = "builder" if source == "architect" else "architect"
+    return request(roster, source, to, kind=kind, in_reply_to=PARENT_ID)
+
+
+def refusal(policy: Policy, req: SendRequest, facts: PolicyFacts) -> PolicyViolation:
+    with pytest.raises(PolicyViolation) as caught:
+        policy.check(req, facts)
+    return caught.value
+
+
+class TestTurnCap:
+    def test_the_twentieth_message_of_a_context_is_accepted(
+        self, roster: Roster, policy: Policy
+    ) -> None:
+        assert policy.check(reply(roster), context_facts(context_turns=19)).status is Status.QUEUED
+
+    def test_the_twenty_first_message_is_refused_with_the_extend_hint(
+        self, roster: Roster, policy: Policy
+    ) -> None:
+        refused = refusal(policy, reply(roster), context_facts(context_turns=20))
+
+        assert refused.code == "turn_cap"
+        assert refused.message == TURN_CAP_TEXT.format(ctx=PARENT_ID, cap=20)
+
+    def test_done_is_accepted_at_the_cap_so_a_capped_context_can_close(
+        self, roster: Roster, policy: Policy
+    ) -> None:
+        facts = context_facts(context_turns=20)
+
+        assert policy.check(reply(roster, Kind.DONE), facts).status is Status.QUEUED
+
+    @pytest.mark.parametrize("cap", [40, 10], ids=["raised", "lowered"])
+    def test_a_context_cap_leaves_room_below_it(
+        self, roster: Roster, policy: Policy, cap: int
+    ) -> None:
+        facts = context_facts(context_turns=cap - 1, context_cap=cap)
+
+        assert policy.check(reply(roster), facts).status is Status.QUEUED
+
+    @pytest.mark.parametrize("cap", [40, 10], ids=["raised", "lowered"])
+    def test_a_context_cap_replaces_the_roster_cap_in_the_refusal(
+        self, roster: Roster, policy: Policy, cap: int
+    ) -> None:
+        facts = context_facts(context_turns=cap, context_cap=cap)
+
+        refused = refusal(policy, reply(roster), facts)
+
+        assert refused.message == TURN_CAP_TEXT.format(ctx=PARENT_ID, cap=cap)
+
+    def test_the_cap_comes_from_the_roster_policy(self) -> None:
+        roster = example_roster("turn_cap = 20", "turn_cap = 5")
+
+        refused = refusal(Policy(roster), reply(roster), context_facts(context_turns=5))
+
+        assert refused.message == TURN_CAP_TEXT.format(ctx=PARENT_ID, cap=5)
+
+    def test_a_message_that_would_be_held_is_refused_instead(
+        self, roster: Roster, policy: Policy
+    ) -> None:
+        refused = refusal(policy, reply(roster, source="builder"), context_facts(context_turns=20))
+
+        assert refused.code == "turn_cap"
+
+
+class TestInboxCap:
+    def test_a_recipient_with_49_open_messages_takes_one_more(
+        self, roster: Roster, policy: Policy
+    ) -> None:
+        facts = context_facts(recipient_open=49)
+
+        assert policy.check(reply(roster), facts).status is Status.QUEUED
+
+    def test_a_recipient_with_50_open_messages_is_full(
+        self, roster: Roster, policy: Policy
+    ) -> None:
+        refused = refusal(policy, reply(roster), context_facts(recipient_open=50))
+
+        assert refused.code == "inbox_full"
+        assert refused.message == "builder has 50 open messages (cap 50)"
+
+    def test_the_cap_comes_from_the_roster_policy_and_the_count_is_the_real_one(self) -> None:
+        roster = example_roster("inbox_cap = 50", "inbox_cap = 3")
+
+        refused = refusal(Policy(roster), reply(roster), context_facts(recipient_open=7))
+
+        assert refused.message == "builder has 7 open messages (cap 3)"
+
+    def test_done_is_not_exempt_from_a_full_inbox(self, roster: Roster, policy: Policy) -> None:
+        refused = refusal(policy, reply(roster, Kind.DONE), context_facts(recipient_open=50))
+
+        assert refused.code == "inbox_full"
+
+    def test_a_message_that_would_be_held_is_refused_instead(
+        self, roster: Roster, policy: Policy
+    ) -> None:
+        refused = refusal(policy, reply(roster, source="builder"), context_facts(recipient_open=50))
+
+        assert (refused.code, refused.message) == (
+            "inbox_full",
+            "architect has 50 open messages (cap 50)",
+        )
+
+
+class TestClosedContext:
+    @pytest.mark.parametrize("kind", [Kind.REPLY, Kind.REQUEST, Kind.INFORM, Kind.DONE])
+    def test_a_closed_context_takes_no_message_of_any_kind(
+        self, roster: Roster, policy: Policy, kind: Kind
+    ) -> None:
+        refused = refusal(policy, reply(roster, kind), context_facts(context_closed_by="builder"))
+
+        assert (refused.code, refused.message) == ("context_closed", CLOSED_TEXT)
+
+    def test_an_open_context_is_not_closed(self, roster: Roster, policy: Policy) -> None:
+        facts = context_facts(context_closed_by=None)
+
+        assert policy.check(reply(roster), facts).status is Status.QUEUED
+
+
+class TestGuardOrder:
+    def test_a_closed_context_is_reported_before_the_turn_and_inbox_caps(
+        self, roster: Roster, policy: Policy
+    ) -> None:
+        facts = context_facts(context_closed_by="builder", context_turns=20, recipient_open=50)
+
+        assert refusal(policy, reply(roster), facts).code == "context_closed"
+
+    def test_the_turn_cap_is_reported_before_a_full_inbox(
+        self, roster: Roster, policy: Policy
+    ) -> None:
+        facts = context_facts(context_turns=20, recipient_open=50)
+
+        assert refusal(policy, reply(roster), facts).code == "turn_cap"
+
+    def test_the_hop_budget_is_reported_before_a_closed_context(
+        self, roster: Roster, policy: Policy
+    ) -> None:
+        facts = context_facts(parent_hop=4, context_closed_by="builder")
+
+        assert refusal(policy, reply(roster), facts).code == "hop_exceeded"

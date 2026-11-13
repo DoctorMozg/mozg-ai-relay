@@ -1,4 +1,4 @@
-"""User CLI: roster check, status, peers, held, approve and deny with exact outputs."""
+"""User CLI: roster check, status, peers, held, approve, deny and context extend outputs."""
 
 from __future__ import annotations
 
@@ -32,7 +32,10 @@ from relay_rig import (
 )
 
 EXAMPLE_ROSTER = PLUGIN / "data" / "roster.example.toml"
-REFUSAL = "mz-relay: approve and deny must be run by the user in a terminal, not by an agent"
+REFUSAL = (
+    "mz-relay: approve, deny and context extend must be run by the user in a terminal, "
+    "not by an agent"
+)
 ISO_TIME = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z")
 NO_SPAWN_ARGV = [["held"], ["status"], ["stop"], ["approve", "m-12345678"], ["deny", "m-12345678"]]
 
@@ -85,16 +88,20 @@ class Relay:
         to: str,
         body: str = "please review",
         msg_id: str | None = None,
+        in_reply_to: str | None = None,
     ) -> str:
+        """A request, or a reply when in_reply_to is set; only a reply may reuse an existing id."""
         args = {"token": token, "id": msg_id or new_id(), "to": to, "kind": "request", "body": body}
+        if in_reply_to is not None:
+            args.update(kind="reply", in_reply_to=in_reply_to)
         return str(client.call("send", args)["id"])
 
     def sent_status(self, client: RelayClient, token: str, msg_id: str) -> str:
-        """The status the sender's inbox `sent:` list shows for msg_id."""
-        prefix = f"- {msg_id} → "
-        text = str(client.call("inbox", {"token": token})["text"])
-        [line] = [line for line in text.splitlines() if line.startswith(prefix)]
-        return line.split(": ", 1)[1].split(" (", 1)[0]
+        """The status the sender's inbox `sent` list shows for msg_id."""
+        sent = client.call("inbox", {"token": token})["sent"]
+        assert isinstance(sent, list)
+        [status] = [entry["status"] for entry in sent if entry["id"] == msg_id]
+        return str(status)
 
     def add_agents(self, extra: str) -> None:
         """Rewrites the roster with extra agents; the mtime moves on so relayd reloads it."""
@@ -365,9 +372,11 @@ class TestApproveTargetsOneRow:
     ) -> None:
         carol_client, carol = relay.agent("carol")
         alice_client, alice = relay.agent("alice")
+        bob_client, bob = relay.agent("bob")
         shared = relay.send(carol_client, carol, "alice", msg_id=new_id())
-        # Ids are unique per sender only; alice's queued row is the newer one with this id.
-        relay.send(alice_client, alice, "bob", msg_id=shared)
+        question = relay.send(bob_client, bob, "alice")
+        # Ids are unique per sender only; alice's queued reply is the newer row with this id.
+        relay.send(alice_client, alice, "bob", msg_id=shared, in_reply_to=question)
 
         assert main(["approve", shared], terminal=FakeTerminal().build()) == 0
 
@@ -375,7 +384,7 @@ class TestApproveTargetsOneRow:
         assert f"{shared}: carol (corporate) → alice (personal)" in out
         assert out.splitlines()[-1] == f"approved {shared}"
         assert relay.sent_status(carol_client, carol, shared) == "queued"
-        assert relay.counts() == {"queued": 2}
+        assert relay.counts() == {"queued": 3}
 
     @pytest.mark.parametrize("command", ["approve", "deny"])
     def test_two_held_rows_sharing_an_id_change_at_most_the_shown_one(
@@ -383,9 +392,11 @@ class TestApproveTargetsOneRow:
     ) -> None:
         relay.add_agents(ERIN_CORPORATE)
         senders = {name: relay.agent(name) for name in ("erin", "carol")}
-        shared = new_id()
-        for client, tok in senders.values():
-            relay.send(client, tok, "alice", msg_id=shared)
+        alice_client, alice = relay.agent("alice")
+        question = relay.send(alice_client, alice, "carol")
+        shared = relay.send(*senders["erin"], "alice", msg_id=new_id())
+        # A new chain may not reuse a context id, so carol reuses erin's id in a reply.
+        relay.send(*senders["carol"], "alice", msg_id=shared, in_reply_to=question)
 
         code = main([command, shared], terminal=FakeTerminal().build())
 
@@ -418,12 +429,18 @@ class TestApproveNeverProbes:
         carol_client, carol = upstream.agent("carol")
         alice_client, alice = upstream.agent("alice")
         msg_id = new_id()
+        question = upstream.send(alice_client, alice, "carol")
+        # Pulled now, so the later inbox reads of carol leave the counts alone.
+        carol_client.call("inbox", {"token": carol})
         if existing is not None:
             upstream.send(alice_client, alice, existing, msg_id=msg_id)
         before = upstream.counts()
+        # carol answers in a reply, since a new chain may not reuse the id of alice's context.
         proxy = Proxy(
             upstream.paths.socket,
-            lambda: upstream.send(carol_client, carol, "alice", msg_id=msg_id),
+            lambda: upstream.send(
+                carol_client, carol, "alice", msg_id=msg_id, in_reply_to=question
+            ),
         )
         server = fake_relayd(proxy)
         user = FakeTerminal(answer="n")
@@ -546,6 +563,91 @@ class TestOutputs:
         assert main(["held"]) == 0
 
         assert capsys.readouterr().out == "no held messages\n"
+
+
+def extend_as(user: FakeTerminal, *argv: str) -> int:
+    return main(["context", "extend", *argv], terminal=user.build())
+
+
+class TestContextExtend:
+    """Run as the user at a terminal unless a test says otherwise."""
+
+    @pytest.fixture
+    def ctx(self, relay: Relay) -> str:
+        client, alice = relay.agent("alice")
+        return relay.send(client, alice, "bob")
+
+    @pytest.fixture
+    def idle_relayd(self, cli_paths: Paths, fake_relayd: Serve) -> FakeRelayd:
+        return fake_relayd(hello_then(lambda req: ok(req, {"context_id": "c", "turn_cap": 1})))
+
+    def test_by_default_the_cap_grows_by_20(
+        self, ctx: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert extend_as(FakeTerminal(), ctx) == 0
+
+        assert capsys.readouterr() == (f"context {ctx} turn cap is now 40\n", "")
+
+    def test_by_sets_the_growth(self, ctx: str, capsys: pytest.CaptureFixture[str]) -> None:
+        assert extend_as(FakeTerminal(), ctx, "--by", "5") == 0
+
+        assert capsys.readouterr().out == f"context {ctx} turn cap is now 25\n"
+
+    def test_by_may_be_the_shared_maximum(
+        self, ctx: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from mz_relay.service import CONTEXT_EXTEND_MAX
+
+        assert CONTEXT_EXTEND_MAX == 100
+        assert extend_as(FakeTerminal(), ctx, "--by", str(CONTEXT_EXTEND_MAX)) == 0
+
+        assert capsys.readouterr().out == f"context {ctx} turn cap is now 120\n"
+
+    def test_the_default_adds_to_the_roster_cap(
+        self, relay: Relay, ctx: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        relay.add_agents("\n[policy]\nturn_cap = 5\n")
+
+        assert extend_as(FakeTerminal(), ctx) == 0
+
+        assert capsys.readouterr().out == f"context {ctx} turn cap is now 25\n"
+
+    def test_an_unknown_context_is_not_found(
+        self, relay: Relay, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        missing = new_id()
+
+        assert extend_as(FakeTerminal(), missing) == 1
+
+        assert capsys.readouterr().err == f"mz-relay: not_found: no context {missing}\n"
+
+    @pytest.mark.parametrize("by", ["0", "-3", "many", "101"])
+    def test_by_outside_1_to_100_is_a_usage_error_and_nothing_is_sent(
+        self, idle_relayd: FakeRelayd, by: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with pytest.raises(SystemExit) as usage:
+            extend_as(FakeTerminal(), new_id(), "--by", by)
+
+        assert usage.value.code == 2
+        assert "--by" in capsys.readouterr().err
+        assert idle_relayd.ops() == []
+
+    def test_without_a_tty_it_is_refused_and_nothing_is_sent(
+        self, idle_relayd: FakeRelayd, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert extend_as(FakeTerminal(tty=False), new_id()) == 2
+
+        assert capsys.readouterr() == ("", REFUSAL + "\n")
+        assert idle_relayd.ops() == []
+
+    @pytest.mark.parametrize("marker", AGENT_ENV_MARKERS)
+    def test_an_agent_env_marker_refuses_even_with_a_tty(
+        self, idle_relayd: FakeRelayd, marker: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert extend_as(FakeTerminal(env={marker: "1"}), new_id()) == 2
+
+        assert capsys.readouterr() == ("", REFUSAL + "\n")
+        assert idle_relayd.ops() == []
 
 
 HELD_ID = "01JC0000000000000000000001"

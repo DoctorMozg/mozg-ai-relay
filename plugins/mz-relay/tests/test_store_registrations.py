@@ -7,7 +7,7 @@ from typing import Any, cast
 
 from mz_relay.envelope import Status
 from mz_relay.roster import Harness
-from mz_relay.store import Registration, Store
+from mz_relay.store import ContextState, Registration, Store
 from relay_rig import envelope, mid, token
 
 
@@ -153,8 +153,10 @@ class TestContexts:
         store.insert_message(first, Status.QUEUED, 1.0, next_attempt_at=1.0)
         store.insert_message(second, Status.HELD, 2.0, next_attempt_at=None)
 
-        assert store.context("ctx-a") == (2, None, False)
+        assert store.context_state("ctx-a") == ContextState(turns=2, turn_cap=None, closed_by=None)
 
     def test_context_never_written_has_no_turns(self, store: Store) -> None:
         # A new message's context does not exist until its insert, and policy asks first.
-        assert store.context("ctx-new") == (0, None, False)
+        assert store.context_state("ctx-new") == ContextState(
+            turns=0, turn_cap=None, closed_by=None
+        )

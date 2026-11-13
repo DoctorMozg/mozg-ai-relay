@@ -1,8 +1,11 @@
-"""Delivery engine: binding errors, confirm, sweep, selection and next_wakeup."""
+"""Delivery engine: binding errors, confirm, sweep, TTL expiry, selection and next_wakeup."""
 
 from __future__ import annotations
 
+import dataclasses
 import logging
+from collections.abc import Callable
+from typing import cast
 
 import pytest
 from mz_relay.delivery import DeliveryJob, DeliveryResult, Outcome
@@ -20,6 +23,8 @@ from relay_rig import (
     EngineRig,
     FakeAdapter,
     MakeRig,
+    envelope,
+    mid,
     result,
 )
 
@@ -290,6 +295,91 @@ class TestSweep:
         rig.engine.sweep()
 
         assert rig.row(msg_id).status == Status.ACKED
+
+
+# Far beyond any ttl, so lease and claim expiry stay out of the TTL tests.
+FAR = 10.0**7
+EXPIRING = [Status.QUEUED, Status.HANDED_OFF, Status.FALLBACK, Status.LEASED]
+
+
+def row_in(rig: EngineRig, status: Status) -> str:
+    """A request from alice to bob created at t0 with ttl 3600, moved to `status`."""
+    if status is Status.HELD:
+        return rig.queue(status=Status.HELD, due_in=None)
+    msg_id = rig.queue(due_in=None)
+    if status is not Status.QUEUED:
+        change = StatusChange(status=status, lease_until=rig.t0 + FAR)
+        rig.move(msg_id, change, Status.QUEUED)
+    return msg_id
+
+
+class TestTTL:
+    @pytest.mark.parametrize("status", EXPIRING)
+    def test_a_waiting_row_expires_one_second_after_its_ttl(
+        self, make_rig: MakeRig, status: Status
+    ) -> None:
+        rig = make_rig(FakeAdapter())
+        msg_id = row_in(rig, status)
+
+        rig.at(3600)
+        assert rig.engine.sweep() == 0
+        assert rig.row(msg_id).status is status
+        rig.at(3601)
+
+        assert rig.engine.sweep() == 1
+        row = rig.row(msg_id)
+        assert (row.status, row.reason) == (Status.EXPIRED, "ttl")
+        assert rig.engine.sweep() == 0
+
+    @pytest.mark.parametrize(
+        "status", [Status.HELD, Status.DELIVERING, Status.DELIVERED, Status.ACKED]
+    )
+    def test_held_in_flight_and_delivered_rows_never_expire(
+        self, make_rig: MakeRig, status: Status
+    ) -> None:
+        rig = make_rig(FakeAdapter())
+        msg_id = row_in(rig, status)
+        rig.at(10.0**6)
+
+        assert rig.engine.sweep() == 0
+
+        assert rig.row(msg_id).status is status
+
+    def test_each_row_expires_by_its_own_ttl(self, make_rig: MakeRig) -> None:
+        rig = make_rig(FakeAdapter())
+        # rig.queue mints ids from a small counter, so this one never collides with them.
+        short = dataclasses.replace(envelope(mid(990_001), to="bob", at=rig.t0), ttl_s=60)
+        rig.store.insert_message(short, Status.QUEUED, rig.t0, next_attempt_at=None)
+        long = row_in(rig, Status.QUEUED)
+        rig.at(61)
+
+        rig.engine.sweep()
+
+        assert rig.row(short.id).status is Status.EXPIRED
+        assert rig.row(long).status is Status.QUEUED
+
+    def test_a_row_acked_between_the_read_and_the_expiry_stays_acked(
+        self, make_rig: MakeRig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rig = make_rig(FakeAdapter())
+        msg_id = row_in(rig, Status.HANDED_OFF)
+        # The wrapper forwards whatever Store.update gets, however the sweep calls it.
+        update = cast("Callable[..., bool]", rig.store.update)
+        raced: list[bool] = []
+
+        def ack_first(*args: object, **kwargs: object) -> bool:
+            changes = [a for a in (*args, *kwargs.values()) if isinstance(a, StatusChange)]
+            if any(c.status is Status.EXPIRED for c in changes) and not raced:
+                raced.append(rig.ack(msg_id))
+            return update(*args, **kwargs)
+
+        monkeypatch.setattr(rig.store, "update", ack_first)
+        rig.at(3601)
+
+        assert rig.engine.sweep() == 0
+
+        assert raced == [True], "the sweep never wrote EXPIRED through Store.update"
+        assert rig.row(msg_id).status is Status.ACKED
 
 
 class TestSelection:

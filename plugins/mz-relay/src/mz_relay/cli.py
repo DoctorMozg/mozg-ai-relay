@@ -29,6 +29,7 @@ from mz_relay.launcher import PLUGIN_DIR, DaemonLauncher
 from mz_relay.paths import Paths, user_home
 from mz_relay.relayd import DEFAULT_IDLE_EXIT_S, run_daemon
 from mz_relay.roster import Harness, load_roster
+from mz_relay.service import CONTEXT_EXTEND_MAX
 from mz_relay.tool_backend import MCP_HARNESSES, run_mcp
 
 log = logging.getLogger(__name__)
@@ -45,8 +46,9 @@ AGENT_ENV_MARKERS = (
     "OPENCODE",
     "PI_CODING_AGENT",
 )
-REFUSAL = "approve and deny must be run by the user in a terminal, not by an agent"
+REFUSAL = "approve, deny and context extend must be run by the user in a terminal, not by an agent"
 LIST_PREVIEW_CHARS = 60
+CONTEXT_EXTEND_BY = 20
 YES = frozenset({"y", "yes"})
 # C0 (but newline), DEL and C1 could move the cursor or rewrite the route line; U+FFFD shows them.
 UNSAFE_CHARS = {code: "\ufffd" for code in (*range(0x20), 0x7F, *range(0x80, 0xA0)) if code != 0x0A}
@@ -96,6 +98,16 @@ def _positive_seconds(raw: str) -> float:
     return value
 
 
+def _extend_by(raw: str) -> int:
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"expected an integer, got {raw!r}") from exc
+    if not 1 <= value <= CONTEXT_EXTEND_MAX:
+        raise argparse.ArgumentTypeError(f"must be in 1..{CONTEXT_EXTEND_MAX}, got {raw!r}")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROG, description="Message agents in other harnesses by roster name."
@@ -136,6 +148,19 @@ def build_parser() -> argparse.ArgumentParser:
     deny = commands.add_parser("deny", help="refuse a held message after confirming")
     deny.add_argument("id")
     deny.add_argument("--reason", default=None, metavar="T", help="reason shown to the sender")
+    context = commands.add_parser("context", help="work with a message context")
+    context_commands = context.add_subparsers(
+        dest="context_command", metavar="<action>", required=True
+    )
+    extend = context_commands.add_parser("extend", help="raise a context's turn cap")
+    extend.add_argument("context_id", metavar="ctx")
+    extend.add_argument(
+        "--by",
+        type=_extend_by,
+        default=CONTEXT_EXTEND_BY,
+        metavar="N",
+        help=f"turns to add (default {CONTEXT_EXTEND_BY})",
+    )
     install = commands.add_parser("install", help="install the Pi or OpenCode adapter")
     install.add_argument("kind", choices=["pi", "opencode"])
     install.add_argument("--dest", default=None, metavar="D", help="file to install to")
@@ -190,6 +215,8 @@ def main(argv: Sequence[str] | None = None, *, terminal: Terminal | None = None)
     if args.command in ("approve", "deny"):
         reason = args.reason if args.command == "deny" else None
         return user.decide(Decision(args.command, args.id, reason), terminal or user_terminal())
+    if args.command == "context":
+        return user.context_extend(args.context_id, args.by, terminal or user_terminal())
     parser.error(f"unhandled command {args.command!r}")
 
 
@@ -343,17 +370,23 @@ class UserCommands:
             sys.stdout.write(f"{msg.get('id')}\t{_route(msg)}\t{msg.get('time')}\t{preview}\n")
         return EXIT_OK
 
+    def context_extend(self, context_id: str, by: int, terminal: Terminal) -> int:
+        """Raises a context's turn cap; like approve, it lifts a guard, so agents are refused."""
+        if _refused(terminal, f"context extend {context_id}"):
+            return EXIT_USAGE
+        try:
+            with closing(
+                DaemonLauncher(self._paths, clock=SystemClock()).connect(client="cli")
+            ) as client:
+                result = client.call("context_extend", {"context_id": context_id, "by": by})
+        except RelayError as exc:
+            return _fail(exc, EXIT_ERROR)
+        sys.stdout.write(f"context {context_id} turn cap is now {result.get('turn_cap')}\n")
+        return EXIT_OK
+
     def decide(self, decision: Decision, terminal: Terminal) -> int:
         """Shows a held message and applies the user's y/N answer; agents are refused first."""
-        markers = [marker for marker in AGENT_ENV_MARKERS if marker in terminal.env]
-        if markers or not terminal.isatty():
-            log.info(
-                "%s %s refused: no tty or agent markers %s",
-                decision.command,
-                decision.msg_id,
-                markers,
-            )
-            sys.stderr.write(f"{PROG}: {REFUSAL}\n")
+        if _refused(terminal, f"{decision.command} {decision.msg_id}"):
             return EXIT_USAGE
         running = _connect_running(self._paths)
         if isinstance(running, int):
@@ -397,6 +430,16 @@ class UserCommands:
         log.info("user confirmed %s of %s", command, msg_id)
         sys.stdout.write(f"{done} {msg_id}\n")
         return EXIT_OK
+
+
+def _refused(terminal: Terminal, what: str) -> bool:
+    """True, after telling the user why, when an agent or a non-terminal runs a user command."""
+    markers = [marker for marker in AGENT_ENV_MARKERS if marker in terminal.env]
+    if not markers and terminal.isatty():
+        return False
+    log.info("%s refused: no tty or agent markers %s", what, markers)
+    sys.stderr.write(f"{PROG}: {REFUSAL}\n")
+    return True
 
 
 def _records(result: Mapping[str, object], key: str) -> list[dict[str, object]]:
