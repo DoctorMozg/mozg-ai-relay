@@ -75,7 +75,7 @@ Native Claude delivery needs Claude 2.1.322 or newer. An older session falls bac
 
 ## Install
 
-Write the [roster](#roster) first, since it is the single source of identity. The examples below write `mz-relay` for the plugin's launcher, `plugins/mz-relay/bin/mz-relay`. Put it on `PATH` or call it by path.
+Write the [roster](#roster) first, since it is the single source of identity. The examples below write `mz-relay` for the plugin's launcher, `plugins/mz-relay/bin/mz-relay`. Put it on `PATH` (a symlink to it works) or call it by path.
 
 ### Claude Code
 
@@ -278,7 +278,7 @@ approved 01J...
 
 `approve`, `deny` and `context extend` refuse to run (exit 2, `approve, deny and context extend must be run by the user in a terminal, not by an agent`) when stdin is not a terminal or an agent marker is in the environment: `CLAUDECODE`, `CLAUDE_CODE_MESSAGING_SOCKET`, `CODEX_THREAD_ID`, `OPENCODE`, `PI_CODING_AGENT`. Only the two `CLAUDE*` markers are verified against a real harness. The other three are UNTESTED.
 
-This is a speed bump, not a lock. An agent with a shell under the same OS user can fake a terminal, for example with `script -qc 'mz-relay approve <id>' /dev/null`. It stops accidents and prompt-injected one-liners. Decide the hold default with that in mind.
+This is a speed bump, not a lock. An agent with a shell under the same OS user can fake a terminal, for example with `script -qc 'mz-relay approve <id>' /dev/null`. It stops accidents and prompt-injected one-liners. relayd itself accepts `decide` and `context_extend` only from a CLI connection, so an MCP or adapter client cannot send them by mistake. Decide the hold default with that in mind.
 
 Exit codes of the CLI: 0 ok, 1 relay error or not approved, 2 usage or config error or refusal, 3 relayd not running (for commands that never start it: `status`, `held`, `approve`, `deny`, `log`, `stop`).
 

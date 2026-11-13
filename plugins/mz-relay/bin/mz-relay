@@ -2,8 +2,10 @@
 # mz-relay: the command line of the mz-relay plugin (relayd, the MCP server, hooks, roster tools).
 set -u
 
-here=${0%/*}
-[[ $here == "$0" ]] && here=.
+# A symlink on PATH must find the runner beside the real script, not beside the link.
+self=$(readlink -f -- "$0" 2>/dev/null) || self=$0
+here=${self%/*}
+[[ $here == "$self" ]] && here=.
 runner=$here/_mz_relay_run.py
 
 fail() {

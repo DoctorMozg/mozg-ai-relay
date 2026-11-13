@@ -19,6 +19,7 @@ from mz_relay.errors import (
     BindingError,
     EnvelopeError,
     NotFound,
+    PolicyViolation,
     ProtocolError,
     ProtocolMismatch,
 )
@@ -517,6 +518,7 @@ class RelayService:
         return {"messages": messages}
 
     def _decide(self, conn: ConnState, args: _Args) -> dict[str, object]:
+        _require_cli(conn, "decide")
         msg_id = args.message_id("id")
         source = args.text("source")
         decision = args.choice("decision", frozenset({"approve", "deny"}))
@@ -541,6 +543,7 @@ class RelayService:
         return {"id": msg_id, "status": change.status.value}
 
     def _context_extend(self, conn: ConnState, args: _Args) -> dict[str, object]:
+        _require_cli(conn, "context_extend")
         context_id = args.text("context_id")
         by = args.integer("by", 1, CONTEXT_EXTEND_MAX)
         default_cap = self._deps.roster.current().policy.turn_cap
@@ -647,3 +650,11 @@ class RelayService:
     def _notify(self) -> None:
         with self._deps.changed:
             self._deps.changed.notify_all()
+
+
+def _require_cli(conn: ConnState, op: str) -> None:
+    # User ops come only from the CLI; this stops a confused client, not an agent with a shell.
+    if conn.client != "cli":
+        raise PolicyViolation(
+            "not_allowed", f"{op} is a user command; only the mz-relay CLI sends it"
+        )

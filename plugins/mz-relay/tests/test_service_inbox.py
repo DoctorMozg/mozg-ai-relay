@@ -256,6 +256,26 @@ class TestDecide:
         assert row.next_attempt_at == rig.clock.now()
         assert rig.call(rig.hello(client="cli"), "held")["messages"] == []
 
+    @pytest.mark.parametrize("client", ["mcp", "hook", "pi", "opencode"])
+    def test_only_the_cli_may_decide_or_extend_a_context(
+        self, rig: ServiceRig, client: str
+    ) -> None:
+        # An adapter or MCP client that sends a user op by mistake must not release a held row.
+        conn_c, carol = rig.connect("carol")
+        msg_id = sent_id(rig, conn_c, carol, "alice")
+        other = rig.hello(client=client)
+
+        for op, args in (
+            ("decide", {"id": msg_id, "source": "carol", "decision": "approve"}),
+            ("context_extend", {"context_id": msg_id, "by": 5}),
+        ):
+            with pytest.raises(RelayError) as err:
+                rig.call(other, op, **args)
+            assert err.value.code == "not_allowed"
+            assert op in err.value.message
+
+        assert status_of(rig, "carol", msg_id) is Status.HELD
+
     def test_approve_notifies_changed(self, rig: ServiceRig) -> None:
         conn_c, carol = rig.connect("carol")
         msg_id = sent_id(rig, conn_c, carol, "alice")

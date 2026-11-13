@@ -182,6 +182,21 @@ class TestHooksNeverExit2:
         assert "needs Python 3.12" in result.stderr
 
 
+class TestSymlinkedShim:
+    def test_a_symlink_on_path_runs_the_real_shim(
+        self, relay_env: dict[str, str], tmp_path: Path, version_line: str
+    ) -> None:
+        # The README suggests putting the launcher on PATH; a symlink is the usual way.
+        links = tmp_path / "links"
+        links.mkdir()
+        (links / "mz-relay").symlink_to(BIN)
+        env = {**relay_env, "PATH": f"{links}:{relay_env.get('PATH', '/usr/bin:/bin')}"}
+
+        result = run(["mz-relay", "version"], env)
+
+        assert (result.returncode, result.stdout) == (0, version_line), result.stderr
+
+
 class TestRunner:
     def test_runner_starts_the_cli_without_the_shim(
         self, relay_env: dict[str, str], version_line: str
