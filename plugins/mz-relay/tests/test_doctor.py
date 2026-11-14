@@ -32,8 +32,8 @@ from relay_rig import (
 
 # What each harness prints for `--version` at the tested release.
 TESTED_OUTPUT = {
-    "claude": "2.1.323 (Claude Code)\n",
-    "codex": "codex-cli 0.167.2\n",
+    "claude": "2.1.325 (Claude Code)\n",
+    "codex": "codex-cli 0.169.0\n",
     "pi": "1.5.2\n",
     "opencode": "1.19.5\n",
 }
@@ -89,6 +89,7 @@ class DoctorSetup:
         self.codex_config = self.codex_home / "config.toml"
         self.bin = home / "plugin" / "bin" / "mz-relay"
         self.bins = FakeBins()
+        self.uid = os.getuid()
 
     def roster(self, *, reviewer_tools: str = "read_only", codex_bin: str = "codex") -> str:
         return f"""\
@@ -159,7 +160,8 @@ description = "Answers docs questions."
     def check(self) -> list[Finding]:
         """Runs doctor; when nothing served the socket before, it must leave no daemon trace."""
         served = self.paths.socket.exists()
-        findings = list(Doctor(self.paths, run=self.bins.run, which=self.bins.which).check())
+        doctor = Doctor(self.paths, run=self.bins.run, which=self.bins.which, uid=self.uid)
+        findings = list(doctor.check())
         if not served:
             assert spawn_traces(self.paths) == [], shown(findings)
         return findings
@@ -244,8 +246,8 @@ def live_pid() -> Iterator[int]:
 class TestTestedVersions:
     def test_the_tested_release_of_each_harness_is_pinned(self) -> None:
         assert TESTED_VERSIONS == {
-            "claude": "2.1.323",
-            "codex": "0.167.2",
+            "claude": "2.1.325",
+            "codex": "0.169.0",
             "pi": "1.5.2",
             "opencode": "1.19.5",
         }
@@ -285,6 +287,26 @@ class TestPaths:
         findings = moved.check()
 
         assert str(moved.paths.socket) in text_of(findings, "paths", "error"), shown(findings)
+
+    def test_state_and_runtime_dirs_owned_by_another_uid_are_errors(
+        self, healthy: DoctorSetup
+    ) -> None:
+        healthy.uid = os.getuid() + 1
+
+        text = text_of(healthy.check(), "paths", "error")
+
+        for directory in (healthy.paths.state_dir, healthy.paths.runtime_dir):
+            assert f"{directory} is owned by uid {os.getuid()}" in text
+
+    def test_a_runtime_dir_that_does_not_exist_yet_is_not_an_error(
+        self, healthy: DoctorSetup
+    ) -> None:
+        moved = DoctorSetup(replace(healthy.paths, runtime_dir=healthy.paths.config_dir / "later"))
+        moved.healthy()
+
+        findings = moved.check()
+
+        assert of(findings, "paths", "error") == [], shown(findings)
 
 
 class TestRoster:

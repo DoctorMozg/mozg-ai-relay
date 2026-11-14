@@ -50,6 +50,13 @@ DEFAULT_DEST = {
 }
 
 
+# Codex starts MCP servers with a small env allowlist; these pass the relay's own paths through.
+CODEX_ENV_VARS_LINE = (
+    'env_vars = ["MZ_RELAY_HOME", "MZ_RELAY_PYTHON", "XDG_RUNTIME_DIR", "XDG_STATE_HOME", '
+    '"XDG_CONFIG_HOME"]'
+)
+
+
 def codex_snippet_lines(bin_path: Path) -> list[str]:
     return [
         CODEX_COMMENT,
@@ -57,6 +64,7 @@ def codex_snippet_lines(bin_path: Path) -> list[str]:
         f'command = "{bin_path}"',
         'args = ["mcp", "--harness", "codex"]',
         'env = { MZ_RELAY_NAME = "reviewer" }',
+        CODEX_ENV_VARS_LINE,
     ]
 
 
@@ -314,6 +322,13 @@ class TestCodexSnippet:
                     "command": str(bin_path),
                     "args": ["mcp", "--harness", "codex"],
                     "env": {"MZ_RELAY_NAME": "reviewer"},
+                    "env_vars": [
+                        "MZ_RELAY_HOME",
+                        "MZ_RELAY_PYTHON",
+                        "XDG_RUNTIME_DIR",
+                        "XDG_STATE_HOME",
+                        "XDG_CONFIG_HOME",
+                    ],
                 }
             }
         }

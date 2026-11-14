@@ -20,6 +20,14 @@ log = logging.getLogger(__name__)
 ADAPTER_MARKER = "// mz-relay adapter"
 PEER_AGENT_NAME = "mz-relay-peer"
 MCP_SERVER_NAME = "mz-relay"
+# Codex starts MCP servers with a small env allowlist, so the relay's own paths need passing on.
+CODEX_PASS_ENV = (
+    "MZ_RELAY_HOME",
+    "MZ_RELAY_PYTHON",
+    "XDG_RUNTIME_DIR",
+    "XDG_STATE_HOME",
+    "XDG_CONFIG_HOME",
+)
 
 
 class InstallError(RelayError):
@@ -140,6 +148,7 @@ def codex_snippet(bin_path: Path, name: str) -> str:
         f"command = {toml_string(str(bin_path))}\n"
         'args = ["mcp", "--harness", "codex"]\n'
         f"env = {{ MZ_RELAY_NAME = {toml_string(name)} }}\n"
+        f"env_vars = [{', '.join(toml_string(var) for var in CODEX_PASS_ENV)}]\n"
     )
 
 

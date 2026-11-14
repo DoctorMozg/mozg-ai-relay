@@ -233,6 +233,20 @@ class TestEntryStatus:
         assert (entry.is_idle, entry.is_busy) == (idle, not idle)
 
 
+class TestFreshEntry:
+    def test_an_entry_without_status_yet_reads_as_busy(self, config_dir: Path) -> None:
+        # Claude 2.1.325 writes the entry about half a second before it adds status.
+        body = registry_json(4242, "s-1")
+        del body["status"]
+        write_entry(config_dir, 4242, body)
+
+        entry = ClaudeRegistry(config_dir).read(4242)
+
+        assert entry is not None
+        assert entry.messaging_socket == Path("/run/user/1000/cc-socks/4242.sock")
+        assert (entry.is_idle, entry.is_busy) == (False, True)
+
+
 class TestFindSession:
     def test_finds_the_entry_carrying_the_session_id(self, config_dir: Path) -> None:
         write_entry(config_dir, 4242, registry_json(4242, "s-1"))

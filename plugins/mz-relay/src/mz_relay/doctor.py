@@ -28,8 +28,8 @@ log = logging.getLogger(__name__)
 Level = Literal["ok", "warn", "error"]
 LEVELS: frozenset[str] = frozenset(get_args(Level))
 TESTED_VERSIONS: Mapping[str, str] = {
-    "claude": "2.1.323",
-    "codex": "0.167.2",
+    "claude": "2.1.325",
+    "codex": "0.169.0",
     "pi": "1.5.2",
     "opencode": "1.19.5",
 }
@@ -62,12 +62,16 @@ class Doctor:
         *,
         run: Runner,
         which: Callable[[str], str | None] = shutil.which,
+        uid: int | None = None,
     ) -> None:
         if not isinstance(paths, Paths):
             raise ValueError(f"paths must be a Paths, got {type(paths).__name__}")
+        if uid is not None and uid < 0:
+            raise ValueError(f"uid must be non-negative, got {uid}")
         self._paths = paths
         self._run = run
         self._which = which
+        self._uid = os.getuid() if uid is None else uid
 
     def check(self) -> list[Finding]:
         findings = list(self._paths_findings())
@@ -93,6 +97,15 @@ class Doctor:
         else:
             yield Finding("ok", "paths", f"socket {paths.socket}")
         yield Finding("ok", "paths", f"db {paths.db}, roster {paths.roster}")
+        # relayd refuses a dir another uid owns; a missing one it creates itself.
+        for directory in (paths.state_dir, paths.runtime_dir):
+            try:
+                owner = directory.stat().st_uid
+            except FileNotFoundError:
+                continue
+            if owner != self._uid:
+                text = f"{directory} is owned by uid {owner}, not {self._uid}; relayd refuses it"
+                yield Finding("error", "paths", text)
 
     def _roster(self, findings: list[Finding]) -> Roster | None:
         try:

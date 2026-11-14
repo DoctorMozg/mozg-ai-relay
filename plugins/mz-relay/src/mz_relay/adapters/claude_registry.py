@@ -172,7 +172,8 @@ def _parse_entry(data: object) -> RegistryEntry | None:
     cwd = data.get("cwd")
     socket = data.get("messagingSocketPath")
     version = data.get("version")
-    status = data.get("status")
+    # Claude writes the entry about half a second before it adds status; until then, busy.
+    status = data.get("status", "")
     # bool is an int subclass; a true/false pid or protocol is malformed.
     if isinstance(pid, bool) or isinstance(peer_protocol, bool):
         return None
