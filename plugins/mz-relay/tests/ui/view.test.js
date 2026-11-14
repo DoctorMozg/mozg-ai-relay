@@ -11,6 +11,7 @@ import {
   mergeInbox,
   modelFromState,
   statusTone,
+  viewTabs,
 } from "../../src/mz_relay/ui/view.js";
 
 const row = (id, extra = {}) => ({
@@ -149,5 +150,12 @@ describe("board helpers", () => {
 
     assert.equal(refresh, false);
     assert.equal(ext, "board");
+  });
+});
+
+describe("viewTabs", () => {
+  test("adds a tab per enabled extension that has a panel, in a fixed order", () => {
+    assert.deepEqual(viewTabs([]), ["relay"]);
+    assert.deepEqual(viewTabs(["notes", "other", "board"]), ["relay", "board", "notes"]);
   });
 });

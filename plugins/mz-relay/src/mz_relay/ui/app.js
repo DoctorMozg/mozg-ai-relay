@@ -1,5 +1,6 @@
 // The mz-relay UI: agents, live traffic, the held queue, a composer and the user's inbox.
 import { Board } from "./board.js";
+import { Notes } from "./notes.js";
 import { html, render, useCallback, useEffect, useRef, useState } from "./preact-htm.module.js";
 import {
   USER,
@@ -10,6 +11,7 @@ import {
   mergeInbox,
   modelFromState,
   statusTone,
+  viewTabs,
 } from "./view.js";
 
 const STATUSES = ["queued", "held", "delivering", "handed_off", "delivered", "fallback", "leased", "acked", "denied", "undeliverable", "expired"];
@@ -238,7 +240,7 @@ function App() {
   const [error, setError] = useState(null);
   const [replyTo, setReplyTo] = useState(null);
   const [tab, setTab] = useState("relay");
-  // Bumped on every extension change, reset and reconnect; the board reloads on it.
+  // Bumped on every extension change, reset and reconnect; extension panels reload on it.
   const [extTick, setExtTick] = useState(0);
   const bumpExt = () => setExtTick((n) => n + 1);
   const timer = useRef(null);
@@ -303,19 +305,21 @@ function App() {
     }
   };
 
+  const tabs = viewTabs(model.extensions);
   return html`
     <header>
       <h1>mz-relay</h1>
       <span class="stream ${stream}" role="status">${stream}</span>
       ${model.relay && html`<span class="muted">relayd ${model.relay.version} · pid ${model.relay.pid}</span>`}
-      ${model.extensions.includes("board") && html`
+      ${tabs.length > 1 && html`
         <nav class="tabs" aria-label="Views">
-          ${["relay", "board"].map((name) => html`
+          ${tabs.map((name) => html`
             <button class=${tab === name ? "active" : ""} aria-pressed=${tab === name} onClick=${() => setTab(name)}>${name}</button>`)}
         </nav>`}
     </header>
     ${error && html`<p class="banner error" role="alert">${error}</p>`}
     ${tab === "board" && html`<main class="wide"><${Board} api=${api} agents=${model.agents} tick=${extTick} /></main>`}
+    ${tab === "notes" && html`<main class="wide"><${Notes} api=${api} tick=${extTick} /></main>`}
     <main hidden=${tab !== "relay"}>
       <div class="col">
         <${Agents} agents=${model.agents} />

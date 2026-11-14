@@ -22,6 +22,13 @@ export function statusTone(status) {
 
 export const BOARD_COLUMNS = ["open", "in_progress", "review", "done"];
 
+const PANELS = ["board", "notes"];
+
+// The header tabs: the relay view, then a panel per enabled extension that has one.
+export function viewTabs(extensions) {
+  return ["relay", ...PANELS.filter((name) => extensions.includes(name))];
+}
+
 export function emptyModel() {
   return { agents: [], log: [], held: [], head: 0, relay: null, extensions: [] };
 }
