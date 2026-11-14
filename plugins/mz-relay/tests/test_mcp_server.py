@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+from collections.abc import Mapping
 from typing import Any
 
 import pytest
@@ -13,15 +14,27 @@ from mz_relay.errors import RelayError
 from mz_relay.mcp_server import DEFAULT_PROTOCOL, SUPPORTED_PROTOCOLS, McpServer, SendArgs
 
 BRIEF = 'You are "alice" on mz-relay, role planner: Plans the work.'
+BOARD_LIST: dict[str, object] = {
+    "name": "board_list",
+    "description": "List tasks.",
+    "inputSchema": {"type": "object"},
+}
 HELD_TEXT = "held m1 for user approval — ask your user to run: mz-relay approve m1"
 
 
 class FakeBackend:
     """Stands in for relayd behind the ToolBackend seam; records calls, replays texts."""
 
-    def __init__(self, *, text: str = "queued m1 for bob", error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        text: str = "queued m1 for bob",
+        error: Exception | None = None,
+        ext_tools: list[dict[str, object]] | None = None,
+    ) -> None:
         self.text = text
         self.error = error
+        self.ext_tools = ext_tools or []
         self.calls: list[tuple[str, object]] = []
 
     def _answer(self, tool: str, arg: object) -> str:
@@ -44,6 +57,12 @@ class FakeBackend:
 
     def peers(self) -> str:
         return self._answer("peers", None)
+
+    def extension_tools(self) -> list[dict[str, object]]:
+        return self.ext_tools
+
+    def ext_call(self, name: str, arguments: Mapping[str, object]) -> str:
+        return self._answer(name, dict(arguments))
 
 
 def make_server(backend: FakeBackend | None = None) -> McpServer:
@@ -261,6 +280,34 @@ class TestTools:
 
         assert error_code(reply) == -32602
         assert backend.calls == []
+
+
+class TestExtensionTools:
+    def initialized(self, backend: FakeBackend) -> McpServer:
+        server = make_server(backend)
+        exchange(server, request("initialize", {"protocolVersion": DEFAULT_PROTOCOL}))
+        return server
+
+    def test_extension_tools_join_the_list_after_initialize(self) -> None:
+        server = self.initialized(FakeBackend(ext_tools=[BOARD_LIST]))
+
+        names = [t["name"] for t in exchange(server, request("tools/list"))["result"]["tools"]]
+
+        assert names == ["send", "inbox", "ack", "peers", "board_list"]
+
+    def test_an_extension_tool_call_goes_to_the_backend_with_its_arguments(self) -> None:
+        backend = FakeBackend(text="2 open tasks", ext_tools=[BOARD_LIST])
+        server = self.initialized(backend)
+
+        reply = tool_call(server, "board_list", {"project": "web"})
+
+        assert reply["result"]["content"][0]["text"] == "2 open tasks"
+        assert backend.calls == [("board_list", {"project": "web"})]
+
+    def test_a_tool_outside_the_list_given_at_initialize_is_unknown(self) -> None:
+        server = self.initialized(FakeBackend(ext_tools=[BOARD_LIST]))
+
+        assert error_code(tool_call(server, "board_post")) == -32602
 
 
 class TestFraming:

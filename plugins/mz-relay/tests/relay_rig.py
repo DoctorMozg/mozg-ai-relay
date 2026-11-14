@@ -18,7 +18,7 @@ import socket
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from types import TracebackType
@@ -34,6 +34,7 @@ if TYPE_CHECKING:
         Outcome,
     )
     from mz_relay.envelope import Envelope, Status
+    from mz_relay.extensions import Extension
     from mz_relay.launcher import DaemonLauncher
     from mz_relay.paths import Paths
     from mz_relay.relayd import RelayDaemon
@@ -936,9 +937,15 @@ class ServiceRig:
     paths: Paths
 
     def __init__(
-        self, home: Path, *, extra_agents: str = "", adapter: FakeAdapter | None = None
+        self,
+        home: Path,
+        *,
+        extra_agents: str = "",
+        adapter: FakeAdapter | None = None,
+        extensions: Sequence[Extension] = (),
     ) -> None:
         from mz_relay import __version__
+        from mz_relay.extensions import Extensions
         from mz_relay.roster import Harness, RosterCache
         from mz_relay.service import RelayService, ServiceDeps
         from mz_relay.store import Store
@@ -953,6 +960,7 @@ class ServiceRig:
         self.roster = RosterCache(self.paths.roster, home)
         self.changed = threading.Condition()
         self.store = Store(self.paths.db)
+        self.extensions = Extensions(extensions, self.paths.state_dir / "ext")
         try:
             self.service = RelayService(
                 ServiceDeps(
@@ -963,9 +971,11 @@ class ServiceRig:
                     paths=self.paths,
                     changed=self.changed,
                     version=__version__,
+                    extensions=self.extensions,
                 )
             )
         except BaseException:
+            self.extensions.close()
             self.store.close()
             raise
         self._conn_ids = itertools.count(1)
@@ -1037,6 +1047,7 @@ class ServiceRig:
         os.utime(self.roster_path, ns=(later, later))
 
     def close(self) -> None:
+        self.extensions.close()
         self.store.close()
 
     def __enter__(self) -> ServiceRig:

@@ -60,7 +60,9 @@ POLICY_RANGES: Mapping[str, tuple[int, int]] = {
     "default_ttl_s": (60, 604800),
 }
 POLICY_KEYS = frozenset({"hold_corporate_to_personal", *POLICY_RANGES})
-TOP_LEVEL_KEYS = frozenset({"version", "policy", "agents"})
+TOP_LEVEL_KEYS = frozenset({"version", "policy", "extensions", "agents"})
+EXTENSION_KEYS = frozenset({"enabled"})
+EXTENSION_NAME_RE = re.compile(r"[a-z][a-z0-9]{0,15}")
 COMMON_AGENT_KEYS = frozenset(
     {"harness", "label", "role", "description", "may_send_to", "tools", "cwd"}
 )
@@ -104,6 +106,7 @@ class AgentSpec:
 class Roster:
     agents: Mapping[str, AgentSpec]
     policy: PolicySettings
+    extensions: tuple[str, ...]
 
     def get(self, name: str) -> AgentSpec:
         spec = self.agents.get(name)
@@ -133,7 +136,23 @@ class _RosterParser:
             raise self.error("agents", "the roster needs at least one [agents.<name>] table")
         names = frozenset(agents_table)
         agents = {name: self.parse_agent(name, raw, names) for name, raw in agents_table.items()}
-        return Roster(agents=MappingProxyType(agents), policy=policy)
+        extensions = self.parse_extensions(self.table(doc, "extensions", required=False))
+        return Roster(agents=MappingProxyType(agents), policy=policy, extensions=extensions)
+
+    def parse_extensions(self, raw: Mapping[str, object]) -> tuple[str, ...]:
+        unknown = sorted(set(raw) - EXTENSION_KEYS)
+        if unknown:
+            key = f"extensions.{unknown[0]}"
+            raise self.error(key, f"unknown [extensions] key {unknown[0]!r}")
+        enabled = raw.get("enabled", [])
+        if not isinstance(enabled, list) or not all(isinstance(n, str) for n in enabled):
+            raise self.error("extensions.enabled", "extensions.enabled must be a list of names")
+        for name in enabled:
+            if EXTENSION_NAME_RE.fullmatch(name) is None:
+                raise self.error("extensions.enabled", f"bad extension name {name!r}")
+        if len(set(enabled)) != len(enabled):
+            raise self.error("extensions.enabled", "extensions.enabled lists a name twice")
+        return tuple(enabled)
 
     def check_version(self, doc: Mapping[str, object]) -> None:
         if "version" not in doc:

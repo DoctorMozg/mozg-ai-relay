@@ -6,6 +6,7 @@ import json
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from typing import Protocol, TextIO
 
 from mz_relay.envelope import Kind
@@ -46,6 +47,8 @@ class ToolBackend(Protocol):
     def inbox(self, limit: int) -> str: ...
     def ack(self, msg_id: str) -> str: ...
     def peers(self) -> str: ...
+    def extension_tools(self) -> list[dict[str, object]]: ...
+    def ext_call(self, name: str, arguments: Mapping[str, object]) -> str: ...
 
 
 def _schema(properties: dict[str, object], required: list[str] | None = None) -> dict[str, object]:
@@ -172,7 +175,7 @@ class McpServer:
         self._methods: dict[str, Callable[[Mapping[str, object]], dict[str, object]]] = {
             "initialize": self._initialize,
             "ping": lambda _params: {},
-            "tools/list": lambda _params: {"tools": TOOLS},
+            "tools/list": lambda _params: {"tools": [*TOOLS, *self._ext_tools]},
             "tools/call": self._call_tool,
         }
         self._tools: dict[str, Callable[[Mapping[str, object]], str]] = {
@@ -181,6 +184,7 @@ class McpServer:
             "ack": self._ack,
             "peers": self._peers,
         }
+        self._ext_tools: list[dict[str, object]] = []
 
     def handle_line(self, line: str) -> str | None:
         """One JSON-RPC line in, one reply line out, or None for a notification."""
@@ -236,6 +240,8 @@ class McpServer:
         offered = params.get("protocolVersion")
         version = offered if offered in SUPPORTED_PROTOCOLS else DEFAULT_PROTOCOL
         log.info("initialize: client offered %r, using %s", offered, version)
+        # Harnesses fix the tool list at connect (list_changed is unreliable), so it is read once.
+        self._ext_tools = self._backend.extension_tools()
         return {
             "protocolVersion": version,
             "capabilities": {"tools": {}},
@@ -246,6 +252,8 @@ class McpServer:
     def _call_tool(self, params: Mapping[str, object]) -> dict[str, object]:
         name = params.get("name")
         tool = self._tools.get(name) if isinstance(name, str) else None
+        if tool is None and any(entry["name"] == name for entry in self._ext_tools):
+            tool = partial(self._backend.ext_call, str(name))
         if tool is None:
             raise _RpcError(INVALID_PARAMS, f"unknown tool: {name!r}")
         arguments = params.get("arguments", {})

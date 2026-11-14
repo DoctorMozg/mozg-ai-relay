@@ -11,6 +11,7 @@ import os
 import signal
 import socket
 import socketserver
+import sqlite3
 import stat
 import struct
 import sys
@@ -24,6 +25,7 @@ from mz_relay.adapters import AdapterContext, build_adapters
 from mz_relay.clock import Clock, SystemClock
 from mz_relay.delivery import DeliveryEngine, EngineDeps, HarnessAdapter
 from mz_relay.errors import PathError, ProtocolError, RelayError, RosterError, StoreError
+from mz_relay.extensions import EVENT_WAIT_S, Extensions, open_extensions
 from mz_relay.paths import Paths
 from mz_relay.protocol import LineReader, Response, decode_request, encode
 from mz_relay.roster import Harness, RosterCache
@@ -153,8 +155,15 @@ class RelayDaemon:
             log.error("relayd cannot start: %s", exc.message)
             return EXIT_CONFIG
         try:
-            return self._run(roster, store)
+            extensions = open_extensions(roster.current().extensions, self._paths.state_dir)
+        except (OSError, RuntimeError, sqlite3.Error) as exc:
+            store.close()
+            log.error("relayd cannot start its extensions: %s", exc)
+            return EXIT_CONFIG
+        try:
+            return self._run(roster, store, extensions)
         finally:
+            extensions.close()
             store.close()
 
     def _socket_path_free(self) -> bool:
@@ -180,7 +189,7 @@ class RelayDaemon:
         log.warning("a relayd without %s already serves %s; exiting", self._paths.lock, path)
         return False
 
-    def _run(self, roster: RosterCache, store: Store) -> int:
+    def _run(self, roster: RosterCache, store: Store, extensions: Extensions) -> int:
         self._service = RelayService(
             ServiceDeps(
                 store=store,
@@ -190,8 +199,10 @@ class RelayDaemon:
                 paths=self._paths,
                 changed=self._changed,
                 version=self._cfg.version,
+                extensions=extensions,
             )
         )
+        self._store, self._extensions = store, extensions
         self._engine = DeliveryEngine(
             EngineDeps(
                 store=store, roster=roster.current, adapters=self._adapters, clock=self._clock
@@ -223,7 +234,10 @@ class RelayDaemon:
             for harness in self._adapters
         ]
         sweep = threading.Thread(target=self._sweep, name="relayd-sweep")
-        return [accept, *workers, sweep]
+        pumps = []
+        if self._extensions.names():
+            pumps.append(threading.Thread(target=self._pump, name="relayd-extensions"))
+        return [accept, *workers, sweep, *pumps]
 
     @contextlib.contextmanager
     def _signals_stop(self) -> Iterator[None]:
@@ -364,6 +378,18 @@ class RelayDaemon:
                 continue
             if swept:
                 self._notify()
+
+    def _pump(self) -> None:
+        """Hands committed events to the extensions, after the write that made them."""
+        while not self._stop.is_set():
+            generation = self._store.generation()
+            try:
+                handed = self._extensions.pump(self._store, self._clock.now())
+            except Exception:
+                log.exception("extension event pass failed")
+                handed = 0
+            if not handed:
+                self._store.wait_commit(generation, EVENT_WAIT_S)
 
     def _notify(self) -> None:
         with self._changed:

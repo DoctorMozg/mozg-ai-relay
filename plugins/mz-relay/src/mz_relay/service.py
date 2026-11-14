@@ -24,6 +24,7 @@ from mz_relay.errors import (
     ProtocolError,
     ProtocolMismatch,
 )
+from mz_relay.extensions import Extensions
 from mz_relay.identity import IdentityQuery, resolve_identity
 from mz_relay.ids import valid_id
 from mz_relay.mcp_server import INBOX_LIMIT_DEFAULT, INBOX_LIMIT_MAX, INBOX_LIMIT_MIN
@@ -104,6 +105,7 @@ class ServiceDeps:
     paths: Paths
     changed: threading.Condition
     version: str
+    extensions: Extensions
 
 
 class _Args:
@@ -222,6 +224,8 @@ class RelayService:
             "context_extend": self._context_extend,
             "log": self._log,
             "message": self._message,
+            "ext_call": self._ext_call,
+            "ext_human": self._ext_human,
             "watch": self._watch,
             "shutdown": self._shutdown,
         }
@@ -321,12 +325,16 @@ class RelayService:
         conn.tokens.add(token)
         store.wake_recipient(spec.name, now)
         self._notify()
-        return {
+        result: dict[str, object] = {
             "token": token,
             "agent": spec.card(),
             "delivery_mode": None if binding is None else binding.mode,
             "brief": self.brief_for(spec),
         }
+        # Harnesses fix their tool list at connect, so the extension tools come with register.
+        if self._deps.extensions.names():
+            result["ext_tools"] = self._deps.extensions.tools_for(spec)
+        return result
 
     def _send(self, conn: ConnState, args: _Args) -> dict[str, object]:
         roster = self._deps.roster.current()
@@ -641,6 +649,25 @@ class RelayService:
             "reason": row.reason,
         }
 
+    def _ext_call(self, conn: ConnState, args: _Args) -> dict[str, object]:
+        me = self._caller(self._deps.roster.current(), args)
+        tool = args.text("tool")
+        result = self._deps.extensions.call(me, tool, _object(args, "args"), self._deps.clock.now())
+        log.info("%s called %s", me.name, tool)
+        self._notify()
+        return result
+
+    def _ext_human(self, conn: ConnState, args: _Args) -> dict[str, object]:
+        # Human actions can mean approval, so only the user's CLI or UI reaches them.
+        _require_cli(conn, "ext_human")
+        ext, action = args.text("ext"), args.text("action")
+        result = self._deps.extensions.human(
+            ext, action, _object(args, "args"), self._deps.clock.now()
+        )
+        log.info("user ran %s.%s", ext, action)
+        self._notify()
+        return result
+
     def _watch(self, conn: ConnState, args: _Args) -> dict[str, object]:
         """Events after since, waiting up to timeout_s for one; no since answers the head seq."""
         since = args.optional_integer("since", 0, SEQ_MAX)
@@ -743,6 +770,17 @@ class RelayService:
     def _notify(self) -> None:
         with self._deps.changed:
             self._deps.changed.notify_all()
+
+
+def _object(args: _Args, name: str) -> dict[str, object]:
+    value = args.raw(name)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise EnvelopeError(
+            f"{name} must be an object, got {type(value).__name__}", {"field": name}
+        )
+    return value
 
 
 def _require_cli(conn: ConnState, op: str) -> None:

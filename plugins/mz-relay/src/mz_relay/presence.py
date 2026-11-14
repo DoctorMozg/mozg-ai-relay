@@ -76,6 +76,8 @@ class Registered:
     agent: dict[str, object]
     delivery_mode: str | None
     brief: str
+    # The agent's extension tools; relayd sends the field only when extensions are enabled.
+    ext_tools: tuple[dict[str, object], ...] = ()
 
     @classmethod
     def from_result(cls, result: Mapping[str, object]) -> Registered:
@@ -91,7 +93,12 @@ class Registered:
             raise ProtocolError("invalid_request", f"register result delivery_mode is {mode!r}")
         if not isinstance(brief, str):
             raise ProtocolError("invalid_request", f"register result brief is {type(brief)}")
-        return cls(token=token, agent=dict(agent), delivery_mode=mode, brief=brief)
+        tools = result.get("ext_tools", [])
+        if not isinstance(tools, list) or not all(isinstance(t, dict) for t in tools):
+            raise ProtocolError("invalid_request", "register result ext_tools is not a tool list")
+        return cls(
+            token=token, agent=dict(agent), delivery_mode=mode, brief=brief, ext_tools=tuple(tools)
+        )
 
 
 class PresenceSession:

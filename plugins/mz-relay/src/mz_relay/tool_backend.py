@@ -89,7 +89,19 @@ class RelayToolBackend:
     def peers(self) -> str:
         return self._call("peers", {})
 
+    def extension_tools(self) -> list[dict[str, object]]:
+        return list(self._presence.current().ext_tools)
+
+    def ext_call(self, name: str, arguments: Mapping[str, object]) -> str:
+        return self._call("ext_call", {"tool": name, "args": dict(arguments)})
+
     def _call(self, op: str, args: Mapping[str, object]) -> str:
+        text = self._result(op, args).get("text")
+        if not isinstance(text, str):
+            raise ProtocolError("invalid_request", f"relayd's {op} result has no text")
+        return text
+
+    def _result(self, op: str, args: Mapping[str, object]) -> dict[str, object]:
         try:
             return self._attempt(op, args)
         except DaemonUnavailable as exc:
@@ -100,16 +112,12 @@ class RelayToolBackend:
             log.warning("relayd still unavailable during %s: %s", op, exc.message)
             raise
 
-    def _attempt(self, op: str, args: Mapping[str, object]) -> str:
+    def _attempt(self, op: str, args: Mapping[str, object]) -> dict[str, object]:
         relay = self._launcher.connect(client="mcp")
         try:
-            result = relay.call(op, {**args, "token": self._presence.current().token})
+            return relay.call(op, {**args, "token": self._presence.current().token})
         finally:
             relay.close()
-        text = result.get("text")
-        if not isinstance(text, str):
-            raise ProtocolError("invalid_request", f"relayd's {op} result has no text")
-        return text
 
 
 def _unavailable(error: RelayError) -> RelayUnavailable:
@@ -145,6 +153,13 @@ class LateRegistrationBackend:
 
     def peers(self) -> str:
         return self._call(lambda backend: backend.peers())
+
+    def extension_tools(self) -> list[dict[str, object]]:
+        # Unregistered at initialize means no extension tools this session; the list is fixed then.
+        return [] if self._backend is None else self._backend.extension_tools()
+
+    def ext_call(self, name: str, arguments: Mapping[str, object]) -> str:
+        return self._call(lambda backend: backend.ext_call(name, arguments))
 
     def _call(self, tool: Callable[[RelayToolBackend], str]) -> str:
         if self._backend is not None:
