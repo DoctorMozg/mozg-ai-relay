@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import contextlib
 import secrets
+import sys
 import tomllib
 from pathlib import Path
 
@@ -19,7 +20,11 @@ from live_rig import (
     TmuxPane,
     delete_codex_thread,
 )
-from relay_rig import paths_in, running_daemon, wait_until
+from relay_rig import PLUGIN, paths_in, running_daemon, wait_until
+
+sys.path.insert(0, str(PLUGIN / "scripts"))
+
+from demo import CODEX_ARGV, CODEX_STARTUP_PROMPTS
 
 # The TUI counts as ready once its screen stops changing for this long.
 TUI_QUIET_S = 3.0
@@ -73,7 +78,7 @@ def test_a_peer_message_is_queued_into_a_renamed_codex_thread(
     relay_home: Path,
     relay_env: dict[str, str],
 ) -> None:
-    """UNTESTED: a first start in an untrusted folder may show a trust prompt that holds the TUI."""
+    """A trust prompt would hold the TUI; the demo's workdir showed one, this one none (0.169)."""
     from mz_relay.adapters import AdapterContext, build_adapters
     from mz_relay.adapters.codex_threads import (
         CodexThreadMissing,
@@ -110,9 +115,17 @@ def test_a_peer_message_is_queued_into_a_renamed_codex_thread(
     ):
         # Registered first, so it runs last: after the pane has closed Codex.
         stack.callback(delete_thread)
-        pane = stack.enter_context(TmuxPane(tmux_bin, [codex_bin], cwd=work, env=env))
+        argv = [codex_bin, *CODEX_ARGV[1:]]
+        pane = stack.enter_context(TmuxPane(tmux_bin, argv, cwd=work, env=env))
         rows = stack.enter_context(RelayRows(paths.db))
         assert pane.wait_quiet(TUI_QUIET_S, START_S), f"the TUI never settled:\n{pane.screen()}"
+        for _ in CODEX_STARTUP_PROMPTS:
+            screen = pane.screen()
+            shown = [p for p in CODEX_STARTUP_PROMPTS if all(m in screen for m in p.markers)]
+            if not shown:
+                break
+            pane.send_key(shown[0].key)
+            assert pane.wait_quiet(TUI_QUIET_S, START_S), pane.screen()
 
         pane.send_line(f"/rename {thread_name}", pause_s=RENAME_PAUSE_S)
         took = wait_until(renamed, START_S, POLL_S)

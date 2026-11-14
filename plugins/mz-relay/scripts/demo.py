@@ -55,6 +55,25 @@ POLL_S = 5.0
 # A TUI may still be taking in typed text or completing a slash command when Enter arrives.
 SUBMIT_PAUSE_S = 1.0
 COMMAND_TIMEOUT_S = 60.0
+
+
+@dataclass(frozen=True)
+class StartupPrompt:
+    """A Codex startup picker, told by its screen text, and the key that passes it unchanged."""
+
+    markers: tuple[str, ...]
+    key: str
+    what: str
+
+
+# Codex shows these before its composer; typed text would pick an option, digits included.
+CODEX_STARTUP_PROMPTS = (
+    StartupPrompt(("Update available", "Skip until next version"), "Escape", "update: skip"),
+    StartupPrompt(("Run without daemon this time",), "1", "app-server daemon: not this time"),
+    StartupPrompt(("Hooks need review", "esc skip"), "Escape", "hook review: skip, untrusted"),
+)
+# Codex >= 0.168 runs MCP servers in a shared daemon that never sees this window's env.
+CODEX_ARGV = ("codex", "--disable", "daemon_auto_start")
 PYTEST_TIMEOUT_S = 120.0
 LOG_LIMIT = "200"
 EXIT_OK = 0
@@ -319,7 +338,9 @@ class Demo:
                 claude,
             ),
             AgentWindow(
-                "reviewer", {"CODEX_HOME": str(config.codex_home), "MZ_RELAY_HOME": home}, ["codex"]
+                "reviewer",
+                {"CODEX_HOME": str(config.codex_home), "MZ_RELAY_HOME": home},
+                list(CODEX_ARGV),
             ),
         ]
 
@@ -362,6 +383,8 @@ class Demo:
         print(f"waiting up to {ONLINE_WAIT_S:g} s for {', '.join(AGENTS)}", flush=True)
         start = self._clock.now()
         while True:
+            # reviewer's Codex starts its MCP server only once past its startup pickers.
+            self._pass_codex_prompt("reviewer")
             missing = sorted(set(AGENTS) - self._online())
             if not missing:
                 return
@@ -371,6 +394,16 @@ class Demo:
                     f" see their windows with tmux -L {TMUX_SOCKET} attach"
                 )
             self._clock.sleep(POLL_S)
+
+    def _pass_codex_prompt(self, window: str) -> None:
+        target = f"{SESSION}:{window}"
+        screen = self._tmux("capture-pane", "-p", "-t", target).stdout
+        for prompt in CODEX_STARTUP_PROMPTS:
+            if all(marker in screen for marker in prompt.markers):
+                print(f"Codex in the {window} window: {prompt.what}", flush=True)
+                self._tmux("send-keys", "-t", target, prompt.key)
+                self._clock.sleep(SUBMIT_PAUSE_S)
+                return
 
     def _type(self, window: str, text: str) -> None:
         target = f"{SESSION}:{window}"

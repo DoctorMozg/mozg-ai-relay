@@ -159,8 +159,8 @@ def test_two_claude_accounts_exchange_a_message_and_the_read_only_gate_holds(
     relay_env: dict[str, str],
     sessions: list[StreamJsonClaude],
 ) -> None:
-    """UNTESTED: asyncRewake hooks may run in the foreground under `claude -p`, so the SessionStart
-    waiter could hang a session; that shows up here as a start or turn timeout."""
+    """asyncRewake hooks under `claude -p` did not hang a session on 2.1.325; a SessionStart
+    waiter run in the foreground would show up here as a start or turn timeout."""
     from mz_relay.envelope import Status
     from mz_relay.store import Store
 

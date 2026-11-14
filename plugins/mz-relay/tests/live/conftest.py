@@ -51,7 +51,7 @@ def live_pi_argv() -> list[str]:
 
 @pytest.fixture
 def live_opencode_argv() -> list[str]:
-    """The OpenCode command from MZ_RELAY_LIVE_OPENCODE, e.g. `opencode -m <provider/model>`."""
+    """The OpenCode command from MZ_RELAY_LIVE_OPENCODE; OPENCODE_CONFIG picks the model."""
     return command_from("MZ_RELAY_LIVE_OPENCODE")
 
 

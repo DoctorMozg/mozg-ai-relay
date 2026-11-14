@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pytest
@@ -97,6 +97,34 @@ class World:
     log_error: str | None = None
     interrupt_on_log: bool = False
     git_global_config: Path | None = None
+    codex_screen: str = ""
+
+
+# Codex startup pickers as seen on 0.167.2 and 0.169.0 (cursor shown as >).
+CODEX_UPDATE_PROMPT = """\
+  ✨ Update available · 0.167.2 → 0.169.0
+  > 1. Update now (runs `npm install -g @openai/codex`)
+    2. Skip
+    3. Skip until next version
+  Press enter to continue · esc skip
+"""
+CODEX_DAEMON_PROMPT = """\
+  These settings persist and can disable functionality for other clients. Restart may interrupt
+  Restart will use these shared feature settings:
+    daemon_auto_start = false
+  1. Run without daemon this time
+  2. Restart with these settings (recommended)
+> 3. Cancel
+"""
+CODEX_HOOKS_PROMPT = """\
+  Hooks need review
+  5 hooks are new or changed.
+  Hooks can run outside the sandbox after you trust them.
+> 1. Review hooks
+  2. Trust all and continue
+  3. Continue without trusting (hooks won't run)
+  enter confirm · esc skip
+"""
 
 
 @dataclass(frozen=True)
@@ -300,6 +328,8 @@ class FakeSystem:
                 self.sessions.add(session)
             elif command.name == "has-session" and target not in self.sessions:
                 return self._done(argv, 1, err=f"can't find session: {target}\n")
+            elif command.name == "capture-pane":
+                return self._done(argv, 0, self.world.codex_screen)
         return self._done(argv, 0)
 
     def _relay(self, argv: Sequence[str]) -> Completed:
@@ -820,6 +850,13 @@ class TestTmuxWindows:
         assert not window.runs("claude"), window.words
         assert window.cwd == str(dirs.workdir)
 
+    def test_the_reviewer_codex_owns_its_mcp_server_so_the_demo_home_reaches_it(
+        self, run_demo: RunDemo
+    ) -> None:
+        window = run_demo().system.windows()["reviewer"]
+
+        assert "--disable daemon_auto_start" in " ".join(window.words), window.words
+
     def test_the_rename_is_submitted_before_the_kickoff(
         self, run_demo: RunDemo, dirs: Dirs
     ) -> None:
@@ -829,6 +866,35 @@ class TestTmuxWindows:
         kickoff, _ = submitted_after(system.keys_sent("architect"), dirs.kickoff)
         assert renamed is not None, "no Enter followed /rename in the reviewer window"
         assert renamed.order < kickoff.order
+
+    @pytest.mark.parametrize(
+        ("screen", "key"),
+        [
+            (CODEX_UPDATE_PROMPT, "Escape"),
+            (CODEX_DAEMON_PROMPT, "1"),
+            (CODEX_HOOKS_PROMPT, "Escape"),
+        ],
+        ids=["update-skip", "daemon-this-time-only", "hooks-untrusted"],
+    )
+    def test_a_codex_startup_prompt_is_answered_while_waiting_for_reviewer(
+        self, run_demo: RunDemo, screen: str, key: str
+    ) -> None:
+        online_at: dict[str, float | None] = {"architect": 0.0, "builder": 0.0, "reviewer": 30.0}
+        world = replace(finished_world(), codex_screen=screen, online_at=online_at)
+        system = run_demo(world).system
+
+        keys = system.keys_sent("reviewer")
+        answers = [k for k in keys if not k.literal and k.text == key]
+        rename, _ = submitted_after(keys, f"/rename {THREAD}")
+        assert answers, f"{key} never sent to the reviewer window: {[k.text for k in keys]}"
+        assert answers[0].at_s < 30.0
+        assert answers[0].order < rename.order
+
+    def test_without_a_startup_prompt_no_key_precedes_the_rename(self, run_demo: RunDemo) -> None:
+        keys = run_demo().system.keys_sent("reviewer")
+
+        rename, _ = submitted_after(keys, f"/rename {THREAD}")
+        assert [k.text for k in keys if k.order < rename.order] == []
 
     def test_the_exact_kickoff_is_typed_into_architect_and_submitted(
         self, run_demo: RunDemo, dirs: Dirs

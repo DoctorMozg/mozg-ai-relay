@@ -7,9 +7,13 @@ All notable changes are listed here. The format follows Keep a Changelog, and ve
 ### Added
 
 - `mz-relay approve|deny <id> --source NAME` picks one of several held messages that share an id; without it, `approve` names the other senders.
+- `mz-relay doctor` reports a state or runtime directory owned by another uid as an error; relayd refuses such a directory.
 
 ### Fixed
 
+- A Claude session's first peer message is no longer dropped: Claude 2.1.325 writes `sessions/<pid>.json` about half a second before it adds `status`, and such an entry now reads as busy instead of invalid.
+- `mz-relay snippet codex` adds `env_vars` for `MZ_RELAY_HOME`, `MZ_RELAY_PYTHON` and the XDG variables, which Codex otherwise drops from the MCP server's environment.
+- The demo answers Codex's startup pickers (update offer, daemon choice, hook review) with the key that changes no setting, instead of typing `/rename` into them, and starts Codex with `--disable daemon_auto_start` so the demo's `MZ_RELAY_HOME` reaches its MCP server.
 - A heartbeat on an unchanged registration no longer re-arms a pull-only message for one extra delivery pass.
 - The OpenCode adapter nacks a failed `promptAsync` with the error name only, so error data that echoes the request cannot reach relayd.log.
 - The Pi adapter closes a `session_shutdown` that lands while its socket is still opening, instead of leaving the socket and presence running, and counts its 1 MiB line limit in bytes.
@@ -19,6 +23,7 @@ All notable changes are listed here. The format follows Keep a Changelog, and ve
 
 ### Changed
 
+- Tested versions: Claude 2.1.325, Codex 0.169.0. Every live test and the demo passed against them, with Pi 1.5.2 and OpenCode 1.19.5.
 - OpenCode adapter log lines carry `mz-relay-oc[<pid>]` and a level, like the Pi adapter's; `MZ_RELAY_RECONNECT_MS` is read with `Number`, as Pi reads it.
 - Store schema 2 adds an index on `messages(context_id, created_at)` for `log --context`; a schema 1 database is migrated when relayd opens it.
 

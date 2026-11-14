@@ -103,8 +103,8 @@ The agent-facing tools are `send`, `inbox`, `ack` and `peers`. Claude, Codex and
 
 | Harness  | Tested  |
 | -------- | ------- |
-| Claude   | 2.1.323 |
-| Codex    | 0.167.2 |
+| Claude   | 2.1.325 |
+| Codex    | 0.169.0 |
 | Pi       | 1.5.2   |
 | OpenCode | 1.19.5  |
 
@@ -132,13 +132,17 @@ The plugin adds the MCP server, the `SessionStart` and `Stop` wait hooks and the
 mz-relay snippet codex --name reviewer
 ```
 
-Prints a `[mcp_servers.mz-relay]` table for `<CODEX_HOME>/config.toml`. Paste it into the config of each Codex account, with that account's agent name. Then name the thread the roster refers to, inside the running TUI:
+Prints a `[mcp_servers.mz-relay]` table for `<CODEX_HOME>/config.toml`. Paste it into the config of each Codex account, with that account's agent name. Codex starts MCP servers with a small environment allowlist, so the table's `env_vars` passes on `MZ_RELAY_HOME`, `MZ_RELAY_PYTHON` and the XDG variables from the process that starts the server. Then name the thread the roster refers to, inside the running TUI:
 
 ```text
 /rename reviewer
 ```
 
 The name must equal the roster's `codex_thread`. Start Codex without `-c`. A Codex started with `-c` cannot be reached by `codex queue` (UNTESTED: seen in a manual probe only), so its messages end `undeliverable` with Codex's stderr as the reason. Delivery goes to the open TUI thread, so the thread must be running.
+
+Codex 0.168 and newer start MCP servers in a shared `codex app-server` daemon (feature `daemon_auto_start`, on by default) rather than in the TUI. The daemon runs under `systemd --user` and never sees the shell that started the TUI. With the default paths that makes no difference. A custom `MZ_RELAY_HOME` or XDG directory reaches the MCP server only when the TUI runs the server itself: start it with `codex --disable daemon_auto_start` and, when a daemon is already running, pick `Run without daemon this time`. `Restart with these settings` changes the shared daemon for every Codex client. The demo and `make live-codex` start Codex this way.
+
+A first start in a folder Codex does not trust can stop at a trust prompt (seen in the demo's workdir), and changed hooks stop at a hook review. Answer both in the TUI before `/rename`.
 
 ### Pi
 
@@ -392,12 +396,12 @@ The script:
 1. writes a demo roster (architect personal Claude, builder corporate Claude, reviewer personal Codex with thread `mzr-demo-reviewer`) to a temporary `MZ_RELAY_HOME` and prints `MZ_RELAY_HOME=<dir>`. `--no-hold` turns the hold off.
 1. seeds `--workdir` (missing or empty) as a git repo with `slug.py` (an unimplemented `slugify`) and `test_slug.py` (three failing cases).
 1. runs `doctor` and stops on any error.
-1. starts the tmux session `mzr-demo` on its own tmux server (`tmux -L mzr-demo attach` to watch) with one window per agent, renames the Codex thread, and waits up to 120 s until `status` shows all three online. A fresh workdir shows a folder-trust prompt in each window, which must be accepted.
+1. starts the tmux session `mzr-demo` on its own tmux server (`tmux -L mzr-demo attach` to watch) with one window per agent, and waits up to 120 s until `status` shows all three online. Codex runs with `--disable daemon_auto_start` (see [Codex](#codex)). The demo answers three Codex startup pickers without changing a setting: the update offer (skip), the daemon choice (`Run without daemon this time`) and the hook review (skip, hooks stay untrusted). It then renames the Codex thread. A fresh workdir shows a folder-trust prompt in each window, which must be accepted. A Claude config dir never used interactively also shows the first-run theme picker and security notes.
 1. types the kickoff into the architect window and polls `log` every 5 s.
 1. prints every held message once with its `mz-relay approve <id>` command (the demo never approves, so with the hold on, run it in another terminal).
 1. exits 0 once the kickoff context has a `done` and `pytest` passes in the workdir, and exits 1 on timeout with the log printed.
 
-It refuses to start when a tmux session `mzr-demo` exists on that server. It never approves or denies a held message itself: it prints the `approve` command for each one. On exit it prints the commands that stop the session and the relay. The renamed Codex thread stays in `CODEX_HOME`. A `relay_name` plugin option set in a real account overrides the window's `MZ_RELAY_NAME`. The live check is `make live-demo` with `MZ_RELAY_LIVE_DEMO="<architect cfg>:<builder cfg>:<codex home>"`. It runs the demo with `--no-hold --timeout 900` and asserts exit 0, a builder to reviewer request, a final `done`, at most 20 messages and a hop of at most 4. A live run against the real harnesses has not been done (UNTESTED).
+It refuses to start when a tmux session `mzr-demo` exists on that server. It never approves or denies a held message itself: it prints the `approve` command for each one. On exit it prints the commands that stop the session and the relay. The renamed Codex thread stays in `CODEX_HOME`. A `relay_name` plugin option set in a real account overrides the window's `MZ_RELAY_NAME`. The live check is `make live-demo` with `MZ_RELAY_LIVE_DEMO="<architect cfg>:<builder cfg>:<codex home>"`. It runs the demo with `--no-hold --timeout 900` and asserts exit 0, a builder to reviewer request, a final `done`, at most 20 messages and a hop of at most 4. It passed against Claude 2.1.325 and Codex 0.169.0.
 
 ## Troubleshooting
 
@@ -425,18 +429,8 @@ Logs are `relayd.log` and `hooks.log` in the state directory (`~/.local/state/mz
 
 These behaviours are implemented from documentation or from probes and have no live test, or the live test has not been run:
 
-- the wrapper text of a peer post that arrives mid-turn in Claude (only hand-backs showed the `while you were working` prefix).
-- Pi `context` events including a follow-up delivered during a user run (`live_pi` busy case), and whether `context` fires before every LLM call.
-- OpenCode: `promptAsync` returning 2xx meaning the prompt is stored, the child-session event order, the JSON shapes of `session list` and `export`, and whether the `config` hook's mutations (MCP entry, `mz-relay-peer` agent, `MZ_RELAY_HOME` passed to the MCP child) take effect.
-- `${user_config.relay_name}` with an empty default.
-- `claude --plugin-dir` as used by the live tests and the demo.
-- Codex: MCP child environment filtering, the exact `Queued message ... for thread ...` output, and a first start in an untrusted folder holding the TUI behind a trust prompt.
-- `asyncRewake` hooks under `claude -p` (the `SessionStart` waiter may run in the foreground).
-- agent environment markers other than `CLAUDECODE` and `CLAUDE_CODE_MESSAGING_SOCKET`.
-- a Codex profile overriding `sandbox_mode` (doctor reads only the top-level key).
-- the Claude gate when an async `Stop` runs after the next peer turn (see [Read-only roles](#read-only-roles)).
-- an install directory owned by another real uid (simulated with a symlink only).
-- the full demo against real Claude and Codex.
+- Pi: a follow-up delivered during a user run (`live_pi` busy case), and whether `context` fires before every LLM call. On a local qwen3-coder the user's run after a read-only peer turn printed its tool call as text, so the busy case never ran a tool; the adapter log showed the gate open and nothing blocked.
+- a Codex profile overriding `sandbox_mode` on Codex 0.169 (doctor reads only the top-level key). Codex 0.167.2 rejects a top-level `profile`, and inline `[profiles.*]` tables did not apply on a plain start.
 
 ## Development
 

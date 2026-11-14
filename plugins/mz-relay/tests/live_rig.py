@@ -94,6 +94,10 @@ class TmuxPane:
             time.sleep(pause_s)
         self._run("send-keys", "-t", "main", "Enter")
 
+    def send_key(self, key: str) -> None:
+        """Presses one named key, such as Escape, without typing text."""
+        self._run("send-keys", "-t", "main", key)
+
     def screen(self) -> str:
         """The pane with its whole scrollback, wrapped lines joined."""
         return self._run("capture-pane", "-p", "-J", "-S", "-", "-t", "main")
