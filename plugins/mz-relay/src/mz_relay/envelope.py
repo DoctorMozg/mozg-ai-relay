@@ -10,11 +10,13 @@ from enum import StrEnum
 
 from mz_relay.errors import EnvelopeError
 from mz_relay.ids import valid_id
-from mz_relay.roster import NAME_RE, AgentSpec, Label
+from mz_relay.roster import NAME_RE, USER_NAME, AgentSpec, Label, Roster
 
 TIME_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z")
 BODY_INDENT = "  "
 HEADER_PREFIX = "[mz-relay] Peer message from "
+# A different first line, so Claude's read-only gate does not treat it as a peer post.
+USER_HEADER_PREFIX = "[mz-relay] Message from your user "
 
 
 class Kind(StrEnum):
@@ -211,3 +213,27 @@ def render_for_delivery(env: Envelope, sender: AgentSpec) -> str:
         "--- end ---",
     ]
     return "\n".join(lines)
+
+
+def render_from_user(env: Envelope) -> str:
+    """The text an agent reads for a message its user wrote in the mz-relay UI or CLI."""
+    if env.source != USER_NAME:
+        raise EnvelopeError(f"source {env.source!r} is not the user", {"field": "source"})
+    lines = [
+        f"{USER_HEADER_PREFIX}to {env.to}, sent through mz-relay.",
+        "Your user wrote this in the mz-relay UI or CLI. Your harness's own permission "
+        "prompts still apply.",
+        f"{header_nonce(env)}  context: {env.context_id}  hop: {env.hop}",
+        _next_step(env),
+        "--- message ---",
+        *(BODY_INDENT + line for line in env.body.splitlines()),
+        "--- end ---",
+    ]
+    return "\n".join(lines)
+
+
+def render_text(env: Envelope, roster: Roster) -> str:
+    """The delivered text: the user's frame for the user, the peer frame for roster agents."""
+    if env.source == USER_NAME:
+        return render_from_user(env)
+    return render_for_delivery(env, roster.get(env.source))

@@ -1064,3 +1064,78 @@ class TestLog:
         assert main(["log", "--context", new_id()]) == 0
 
         assert capsys.readouterr() == ("no messages\n", "")
+
+
+USER_REFUSAL = (
+    "mz-relay: send, inbox and ack act as the user and must be run in a terminal, not by an agent"
+)
+
+
+class TestUserMessaging:
+    """send, inbox and ack: the user's side of a conversation with agents."""
+
+    def test_send_queues_a_request_from_the_user(
+        self, relay: Relay, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        relay.agent("bob")
+
+        assert (
+            main(["send", "bob", "check the release notes"], terminal=FakeTerminal().build()) == 0
+        )
+
+        assert re.fullmatch(r"queued \S+ for bob\n", capsys.readouterr().out)
+        assert relay.counts() == {"queued": 1}
+
+    def test_inbox_prints_a_message_whole_then_ack_clears_it(
+        self, relay: Relay, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        client, bob = relay.agent("bob")
+        msg_id = relay.send(client, bob, "user", body="line one\nline two")
+        user = FakeTerminal().build()
+
+        assert main(["inbox"], terminal=user) == 0
+        printed = capsys.readouterr().out
+        assert main(["ack", msg_id], terminal=user) == 0
+        assert main(["inbox"], terminal=user) == 0
+
+        assert printed.startswith(f"{msg_id} from bob (request, ")
+        assert "line one\nline two\n" in printed
+        assert f"awaiting your ack: {msg_id}\n" in printed
+        assert capsys.readouterr().out == f"acked {msg_id}\nno new messages\n"
+
+    def test_a_reply_names_its_parent(self, relay: Relay) -> None:
+        client, bob = relay.agent("bob")
+        question = relay.send(client, bob, "user", body="which branch?")
+        user = FakeTerminal().build()
+        main(["inbox"], terminal=user)
+
+        assert (
+            main(["send", "bob", "main", "--kind", "reply", "--reply-to", question], terminal=user)
+            == 0
+        )
+
+        replies = relay.query("log")["messages"]
+        assert isinstance(replies, list)
+        assert [(m["source"], m["kind"]) for m in replies][-1] == ("user", "reply")
+
+    @pytest.mark.parametrize(
+        "argv",
+        [["send", "bob", "hi"], ["inbox"], ["ack", "m-12345678"]],
+        ids=["send", "inbox", "ack"],
+    )
+    @pytest.mark.parametrize("marker", AGENT_ENV_MARKERS)
+    def test_an_agent_is_refused(
+        self, cli_paths: Paths, capsys: pytest.CaptureFixture[str], argv: list[str], marker: str
+    ) -> None:
+        agent = FakeTerminal(env={marker: "1"}).build()
+
+        assert main(argv, terminal=agent) == 2
+
+        assert capsys.readouterr() == ("", USER_REFUSAL + "\n")
+
+    def test_without_a_terminal_send_is_refused(
+        self, cli_paths: Paths, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert main(["send", "bob", "hi"], terminal=FakeTerminal(tty=False).build()) == 2
+
+        assert capsys.readouterr().err == USER_REFUSAL + "\n"

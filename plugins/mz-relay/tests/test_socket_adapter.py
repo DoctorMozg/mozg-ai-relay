@@ -219,11 +219,12 @@ class SocketRig:
         tools: str = "full",
         status: Status = Status.DELIVERING,
         handed_off_ago: float = 0.0,
+        source: str = "alice",
     ) -> DeliveryJob:
         spec = self.spec(harness, tools)
         handed_off_at = NOW - handed_off_ago if status is Status.HANDED_OFF else None
         row = StoredMessage(
-            envelope=envelope(MSG, to=spec.name, at=NOW),
+            envelope=envelope(MSG, source=source, to=spec.name, at=NOW),
             status=status,
             reason=None,
             via=None,
@@ -416,6 +417,16 @@ class TestDeliverFrame:
         sockets.adapter(harness).deliver(sockets.job(harness, tools="read_only"))
 
         assert server.requests == [{"op": "deliver", "id": MSG, "text": TEXT, "gate": "read_only"}]
+
+    @BOTH
+    def test_the_users_message_to_a_read_only_agent_gets_gate_full(
+        self, sockets: SocketRig, harness: Harness
+    ) -> None:
+        server = sockets.serve(harness, ack("delivered"))
+
+        sockets.adapter(harness).deliver(sockets.job(harness, tools="read_only", source="user"))
+
+        assert server.requests == [{"op": "deliver", "id": MSG, "text": TEXT, "gate": "full"}]
 
 
 class TestDeliverOutcome:

@@ -19,6 +19,8 @@ log = logging.getLogger(__name__)
 
 ROSTER_VERSION = 1
 NAME_RE = re.compile(r"[a-z][a-z0-9-]{0,31}")
+# The human behind the CLI and UI; relayd routes it without a roster entry.
+USER_NAME = "user"
 ROLE_MAX = 40
 DESCRIPTION_MAX = 300
 DEFAULT_CODEX_BIN = "codex"
@@ -195,6 +197,8 @@ class _RosterParser:
                 f"agent name {name!r} must be 1-32 characters of a-z, 0-9 and -, "
                 "starting with a letter",
             )
+        if name == USER_NAME:
+            raise self.error(prefix, f"agent name {name!r} is reserved for the human user")
         if not isinstance(raw, dict):
             raise self.error(prefix, f"{prefix} must be a table, got {type(raw).__name__}")
         unknown = sorted(set(raw) - AGENT_KEYS)

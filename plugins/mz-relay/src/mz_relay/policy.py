@@ -4,21 +4,44 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Protocol
 
 from mz_relay.envelope import Kind, Status
 from mz_relay.errors import EnvelopeError, PolicyViolation
 from mz_relay.ids import valid_id
-from mz_relay.roster import AgentSpec, Label, Roster
+from mz_relay.roster import USER_NAME, Label, Roster
 
 log = logging.getLogger(__name__)
 
 MAX_BODY_CHARS = 32_000
+# Nothing delivers to the user; its messages wait for the UI or `mz-relay inbox` this long.
+USER_INBOX_TTL_S = 604_800
+
+
+class Sender(Protocol):
+    """Who sends: a roster AgentSpec, or the user."""
+
+    @property
+    def name(self) -> str: ...
+    @property
+    def label(self) -> Label: ...
+    @property
+    def may_send_to(self) -> frozenset[str]: ...
+
+
+@dataclass(frozen=True)
+class UserSender:
+    """The human; may message every roster agent, and its messages are never held."""
+
+    may_send_to: frozenset[str]
+    name: str = USER_NAME
+    label: Label = Label.PERSONAL
 
 
 @dataclass(frozen=True)
 class SendRequest:
     msg_id: str
-    source: AgentSpec
+    source: Sender
     to: str
     kind: Kind
     body: str
@@ -78,7 +101,7 @@ class Policy:
     def _decide(self, req: SendRequest, facts: PolicyFacts) -> Decision:
         if not valid_id(req.msg_id):
             raise EnvelopeError(f"message id is not valid: {req.msg_id!r}", {"field": "id"})
-        recipient = self._recipient(req)
+        recipient_label = self._recipient(req)
         self._check_body(req)
         parent = facts.parent
         if req.in_reply_to is not None and parent is None:
@@ -87,29 +110,36 @@ class Policy:
                 f"no message {req.in_reply_to} was delivered to {req.source.name}",
             )
         context_id = self._context_id(req, parent)
-        hop = self._hop(parent)
-        self._check_caps(req, recipient, context_id, facts)
+        from_user = req.source.name == USER_NAME
+        # The user's words start a fresh agent chain, so its sends never spend the hop budget.
+        hop = 0 if from_user else self._hop(parent)
+        self._check_caps(req, context_id, facts, from_user=from_user)
+        held = recipient_label is not None and self._held(req.source.label, recipient_label)
+        to_user = req.to == USER_NAME
         return Decision(
-            status=Status.HELD if self._held(req.source, recipient) else Status.QUEUED,
+            status=Status.HELD if held else Status.QUEUED,
             hop=hop,
             context_id=context_id,
             label=req.source.label,
             ack_required=req.kind is Kind.REQUEST,
-            ttl_s=self._roster.policy.default_ttl_s,
+            ttl_s=USER_INBOX_TTL_S if to_user else self._roster.policy.default_ttl_s,
         )
 
-    def _recipient(self, req: SendRequest) -> AgentSpec:
+    def _recipient(self, req: SendRequest) -> Label | None:
+        """The recipient's label, None for the user, whom every agent may message unheld."""
+        # may_send_to may name the agent itself, so echo is checked first to refuse it anyway.
+        if req.to == req.source.name:
+            raise PolicyViolation("echo_to_origin", f"{req.source.name} cannot message itself")
+        if req.to == USER_NAME:
+            return None
         recipient = self._roster.agents.get(req.to)
         if recipient is None:
             raise PolicyViolation("unknown_recipient", f"{req.to!r} is not in the roster")
-        # may_send_to may name the agent itself, so echo is checked first to refuse it anyway.
-        if recipient.name == req.source.name:
-            raise PolicyViolation("echo_to_origin", f"{req.source.name} cannot message itself")
         if recipient.name not in req.source.may_send_to:
             raise PolicyViolation(
                 "not_allowed", f"{req.source.name} may not send to {recipient.name}"
             )
-        return recipient
+        return recipient.label
 
     def _check_body(self, req: SendRequest) -> None:
         if not req.body and req.kind is not Kind.DONE:
@@ -151,7 +181,7 @@ class Policy:
         return hop
 
     def _check_caps(
-        self, req: SendRequest, recipient: AgentSpec, context_id: str, facts: PolicyFacts
+        self, req: SendRequest, context_id: str, facts: PolicyFacts, *, from_user: bool
     ) -> None:
         # Runs before the hold, so a message that would be held is refused, not held.
         if facts.context_closed_by is not None:
@@ -161,8 +191,8 @@ class Policy:
             )
         policy = self._roster.policy
         cap = policy.turn_cap if facts.context_cap is None else facts.context_cap
-        # done is exempt so a context at its cap can still be closed.
-        if req.kind is not Kind.DONE and facts.context_turns >= cap:
+        # done is exempt so a context at its cap can still be closed; the user is never capped.
+        if not from_user and req.kind is not Kind.DONE and facts.context_turns >= cap:
             raise PolicyViolation(
                 "turn_cap",
                 f"context {context_id} reached {cap} messages; "
@@ -172,14 +202,13 @@ class Policy:
         if facts.recipient_open >= policy.inbox_cap:
             raise PolicyViolation(
                 "inbox_full",
-                f"{recipient.name} has {facts.recipient_open} open messages "
-                f"(cap {policy.inbox_cap})",
+                f"{req.to} has {facts.recipient_open} open messages (cap {policy.inbox_cap})",
                 {"inbox_cap": policy.inbox_cap},
             )
 
-    def _held(self, source: AgentSpec, recipient: AgentSpec) -> bool:
+    def _held(self, source: Label, recipient: Label) -> bool:
         return (
             self._roster.policy.hold_corporate_to_personal
-            and source.label is Label.CORPORATE
-            and recipient.label is Label.PERSONAL
+            and source is Label.CORPORATE
+            and recipient is Label.PERSONAL
         )

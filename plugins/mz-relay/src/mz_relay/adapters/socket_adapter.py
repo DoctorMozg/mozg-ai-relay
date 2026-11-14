@@ -16,7 +16,7 @@ from mz_relay.envelope import Status
 from mz_relay.errors import BindingError, ProtocolError
 from mz_relay.paths import Paths
 from mz_relay.protocol import LineReader
-from mz_relay.roster import AgentSpec, Harness
+from mz_relay.roster import USER_NAME, AgentSpec, Harness, ToolMode
 
 log = logging.getLogger(__name__)
 
@@ -84,7 +84,9 @@ class SocketAdapter:
 
     def deliver(self, job: DeliveryJob) -> DeliveryResult:
         env = job.message.envelope
-        frame = {"op": "deliver", "id": env.id, "text": job.text, "gate": job.spec.tools.value}
+        # The user's own words never run under the read-only gate meant for peers.
+        gate = ToolMode.FULL.value if env.source == USER_NAME else job.spec.tools.value
+        frame = {"op": "deliver", "id": env.id, "text": job.text, "gate": gate}
         try:
             reply = self._exchange(job.binding, frame)
             outcome = self._ack_outcome(reply, env.id)

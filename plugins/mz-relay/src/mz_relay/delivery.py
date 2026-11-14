@@ -9,7 +9,7 @@ from enum import StrEnum
 from typing import Protocol, assert_never
 
 from mz_relay.clock import Clock
-from mz_relay.envelope import Status, render_for_delivery
+from mz_relay.envelope import Status, render_text
 from mz_relay.errors import BindingError
 from mz_relay.roster import AgentSpec, Harness, Roster
 from mz_relay.store import (
@@ -222,7 +222,7 @@ class DeliveryEngine:
                 log.info("%s to %s is pull-only: no wake-up channel", env.id, env.to)
                 self._rearm_if_registered(row, attempt.registration)
             return 1
-        text = render_for_delivery(env, roster.get(env.source))
+        text = render_text(env, roster)
         now = self._deps.clock.now()
         claim = StatusChange(Status.DELIVERING, lease_until=now + CLAIM_S)
         if not self._write(row, claim, Status.QUEUED, "claim"):
@@ -246,7 +246,7 @@ class DeliveryEngine:
         if attempt.binding is None:
             self._unreachable(attempt, NO_BINDING_DETAIL, Status.HANDED_OFF)
             return 1
-        text = render_for_delivery(env, roster.get(env.source))
+        text = render_text(env, roster)
         job = DeliveryJob(
             message=row,
             text=text,

@@ -26,8 +26,10 @@ from mz_relay.errors import (
     RelayError,
 )
 from mz_relay.hooks import run_hook
+from mz_relay.ids import new_id
 from mz_relay.install import Installer, codex_snippet, opencode_snippet, plugin_bin
 from mz_relay.launcher import PLUGIN_DIR, DaemonLauncher
+from mz_relay.mcp_server import INBOX_LIMIT_DEFAULT, INBOX_LIMIT_MAX, INBOX_LIMIT_MIN
 from mz_relay.paths import Paths, user_home
 from mz_relay.procs import run_in_group
 from mz_relay.relayd import DEFAULT_IDLE_EXIT_S, run_daemon
@@ -51,6 +53,8 @@ AGENT_ENV_MARKERS = (
 )
 SOURCE_HELP = "the sender, when held messages from several senders share the id"
 REFUSAL = "approve, deny and context extend must be run by the user in a terminal, not by an agent"
+USER_REFUSAL = "send, inbox and ack act as the user and must be run in a terminal, not by an agent"
+SEND_KINDS = ("request", "inform", "reply", "done")
 LIST_PREVIEW_CHARS = 60
 CONTEXT_EXTEND_BY = 20
 YES = frozenset({"y", "yes"})
@@ -92,6 +96,16 @@ class Decision:
             raise ValueError(f"command must be approve or deny, got {self.command!r}")
 
 
+@dataclass(frozen=True)
+class UserMessage:
+    """One message the user sends from the terminal."""
+
+    to: str
+    body: str
+    kind: str = "request"
+    reply_to: str | None = None
+
+
 def _ask_on_tty(prompt: str) -> str:
     # The prompt goes to /dev/tty so piped stdin or stdout can't answer it.
     with open("/dev/tty", "r+", encoding="utf-8") as tty:
@@ -131,6 +145,18 @@ def _log_limit(raw: str) -> int:
         raise argparse.ArgumentTypeError(f"expected an integer, got {raw!r}") from exc
     if not 1 <= value <= LOG_LIMIT_MAX:
         raise argparse.ArgumentTypeError(f"must be in 1..{LOG_LIMIT_MAX}, got {raw!r}")
+    return value
+
+
+def _inbox_limit(raw: str) -> int:
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if not INBOX_LIMIT_MIN <= value <= INBOX_LIMIT_MAX:
+        raise argparse.ArgumentTypeError(
+            f"must be an integer in {INBOX_LIMIT_MIN}..{INBOX_LIMIT_MAX}, got {raw!r}"
+        )
     return value
 
 
@@ -193,6 +219,21 @@ def build_parser() -> argparse.ArgumentParser:
     deny.add_argument("id")
     deny.add_argument("--source", default=None, metavar="NAME", help=SOURCE_HELP)
     deny.add_argument("--reason", default=None, metavar="T", help="reason shown to the sender")
+    send = commands.add_parser("send", help="message an agent as the user")
+    send.add_argument("to")
+    send.add_argument("body")
+    send.add_argument("--kind", choices=SEND_KINDS, default="request", help="default request")
+    send.add_argument("--reply-to", default=None, metavar="ID", help="answer this message")
+    inbox = commands.add_parser("inbox", help="read the messages agents sent to the user")
+    inbox.add_argument(
+        "--limit",
+        type=_inbox_limit,
+        default=INBOX_LIMIT_DEFAULT,
+        metavar="N",
+        help=f"at most N new messages (default {INBOX_LIMIT_DEFAULT})",
+    )
+    ack = commands.add_parser("ack", help="mark a message to the user as handled")
+    ack.add_argument("id")
     context = commands.add_parser("context", help="work with a message context")
     context_commands = context.add_subparsers(
         dest="context_command", metavar="<action>", required=True
@@ -270,6 +311,13 @@ def main(argv: Sequence[str] | None = None, *, terminal: Terminal | None = None)
         return user.decide(decision, terminal or user_terminal())
     if args.command == "context":
         return user.context_extend(args.context_id, args.by, terminal or user_terminal())
+    if args.command == "send":
+        message = UserMessage(args.to, args.body, args.kind, args.reply_to)
+        return user.send(message, terminal or user_terminal())
+    if args.command == "inbox":
+        return user.inbox(args.limit, terminal or user_terminal())
+    if args.command == "ack":
+        return user.ack(args.id, terminal or user_terminal())
     parser.error(f"unhandled command {args.command!r}")
 
 
@@ -471,6 +519,66 @@ class UserCommands:
         sys.stdout.write(f"context {context_id} turn cap is now {result.get('turn_cap')}\n")
         return EXIT_OK
 
+    def send(self, message: UserMessage, terminal: Terminal) -> int:
+        if _refused(terminal, f"send to {message.to}", USER_REFUSAL):
+            return EXIT_USAGE
+        args: dict[str, object] = {
+            "id": new_id(),
+            "to": message.to,
+            "kind": message.kind,
+            "body": message.body,
+        }
+        if message.reply_to is not None:
+            args["in_reply_to"] = message.reply_to
+        try:
+            with closing(
+                DaemonLauncher(self._paths, clock=SystemClock()).connect(client="cli")
+            ) as client:
+                result = client.call("send_as_user", args)
+        except RelayError as exc:
+            return _fail(exc, EXIT_ERROR)
+        sys.stdout.write(f"{_safe_text(str(result.get('text')))}\n")
+        return EXIT_OK
+
+    def inbox(self, limit: int, terminal: Terminal) -> int:
+        if _refused(terminal, "inbox", USER_REFUSAL):
+            return EXIT_USAGE
+        running = _connect_running(self._paths)
+        if isinstance(running, int):
+            return running
+        with closing(running[0]) as client:
+            try:
+                result = client.call("user_inbox", {"limit": limit})
+            except RelayError as exc:
+                return _fail(exc, EXIT_ERROR)
+        messages, awaiting = _records(result, "messages"), _records(result, "awaiting_ack")
+        if not messages:
+            sys.stdout.write("no new messages\n")
+        for msg in messages:
+            reply = f", answers {msg['in_reply_to']}" if msg.get("in_reply_to") else ""
+            sys.stdout.write(
+                f"{msg.get('id')} from {msg.get('source')} ({msg.get('kind')}, {msg.get('time')}"
+                f"{reply})\n{_safe_text(str(msg.get('body')))}\n\n"
+            )
+        pending = [str(msg.get("id")) for msg in awaiting]
+        if pending:
+            sys.stdout.write(f"awaiting your ack: {', '.join(pending)}\n")
+        return EXIT_OK
+
+    def ack(self, msg_id: str, terminal: Terminal) -> int:
+        if _refused(terminal, f"ack {msg_id}", USER_REFUSAL):
+            return EXIT_USAGE
+        running = _connect_running(self._paths)
+        if isinstance(running, int):
+            return running
+        with closing(running[0]) as client:
+            try:
+                client.call("user_ack", {"id": msg_id})
+            except RelayError as exc:
+                return _fail(exc, EXIT_ERROR)
+        sys.stdout.write(f"acked {msg_id}\n")
+        return EXIT_OK
+
     def decide(self, decision: Decision, terminal: Terminal) -> int:
         """Shows a held message and applies the user's y/N answer; agents are refused first."""
         if _refused(terminal, f"{decision.command} {decision.msg_id}"):
@@ -525,13 +633,13 @@ class UserCommands:
         return EXIT_OK
 
 
-def _refused(terminal: Terminal, what: str) -> bool:
+def _refused(terminal: Terminal, what: str, refusal: str = REFUSAL) -> bool:
     """True, after telling the user why, when an agent or a non-terminal runs a user command."""
     markers = [marker for marker in AGENT_ENV_MARKERS if marker in terminal.env]
     if not markers and terminal.isatty():
         return False
     log.info("%s refused: no tty or agent markers %s", what, markers)
-    sys.stderr.write(f"{PROG}: {REFUSAL}\n")
+    sys.stderr.write(f"{PROG}: {refusal}\n")
     return True
 
 

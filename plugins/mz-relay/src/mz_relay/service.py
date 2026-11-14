@@ -14,7 +14,7 @@ from pathlib import Path
 from mz_relay import texts
 from mz_relay.clock import Clock, iso_utc
 from mz_relay.delivery import LEASE_S, HarnessAdapter
-from mz_relay.envelope import Envelope, Kind, Status, render_for_delivery
+from mz_relay.envelope import Envelope, Kind, Status, render_text
 from mz_relay.errors import (
     AuthError,
     BindingError,
@@ -28,9 +28,9 @@ from mz_relay.identity import IdentityQuery, resolve_identity
 from mz_relay.ids import valid_id
 from mz_relay.mcp_server import INBOX_LIMIT_DEFAULT, INBOX_LIMIT_MAX, INBOX_LIMIT_MIN
 from mz_relay.paths import Paths
-from mz_relay.policy import ParentFacts, Policy, PolicyFacts, SendRequest
+from mz_relay.policy import ParentFacts, Policy, PolicyFacts, Sender, SendRequest, UserSender
 from mz_relay.protocol import PROTOCOL_VERSION, Request
-from mz_relay.roster import AgentSpec, Harness, Roster, RosterCache, ToolMode
+from mz_relay.roster import USER_NAME, AgentSpec, Harness, Roster, RosterCache, ToolMode
 from mz_relay.store import (
     DuplicateMessage,
     Event,
@@ -208,6 +208,9 @@ class RelayService:
             "hello": self._hello,
             "register": self._register,
             "send": self._send,
+            "send_as_user": self._send_as_user,
+            "user_inbox": self._user_inbox,
+            "user_ack": self._user_ack,
             "peers": self._peers,
             "inbox": self._inbox,
             "ack": self._ack,
@@ -252,6 +255,7 @@ class RelayService:
             f'You are "{spec.name}" on mz-relay, role {spec.role}: {spec.description}',
             "Peers you may message (name : role — description):",
             *(f"- {peer.name} : {peer.role} — {peer.description}" for peer in peers),
+            f"- {USER_NAME} : your user — reads it in the mz-relay UI or with `mz-relay inbox`",
             BRIEF_RULES,
         ]
         if spec.tools is ToolMode.READ_ONLY:
@@ -325,7 +329,14 @@ class RelayService:
 
     def _send(self, conn: ConnState, args: _Args) -> dict[str, object]:
         roster = self._deps.roster.current()
-        source = self._caller(roster, args)
+        return self._send_from(roster, self._caller(roster, args), args)
+
+    def _send_as_user(self, conn: ConnState, args: _Args) -> dict[str, object]:
+        _require_cli(conn, "send_as_user")
+        roster = self._deps.roster.current()
+        return self._send_from(roster, UserSender(may_send_to=frozenset(roster.agents)), args)
+
+    def _send_from(self, roster: Roster, source: Sender, args: _Args) -> dict[str, object]:
         msg_id = args.text("id")
         store = self._deps.store
         stored = store.get(source.name, msg_id)
@@ -474,29 +485,48 @@ class RelayService:
 
     def _rendered(self, roster: Roster, row: StoredMessage) -> dict[str, object]:
         env = row.envelope
-        return {"envelope": env.to_json(), "text": render_for_delivery(env, roster.get(env.source))}
+        return {"envelope": env.to_json(), "text": render_text(env, roster)}
+
+    def _user_inbox(self, conn: ConnState, args: _Args) -> dict[str, object]:
+        """Hands the user its new messages, whole, and lists those still waiting for its ack."""
+        _require_cli(conn, "user_inbox")
+        limit = args.integer("limit", INBOX_LIMIT_MIN, INBOX_LIMIT_MAX, INBOX_LIMIT_DEFAULT)
+        store = self._deps.store
+        pulled = store.pull_for(USER_NAME, limit, self._deps.clock.now())
+        if pulled:
+            self._notify()
+        return {
+            "messages": [row.envelope.to_json() for row in pulled],
+            "awaiting_ack": [row.envelope.to_json() for row in store.awaiting_ack(USER_NAME)],
+        }
+
+    def _user_ack(self, conn: ConnState, args: _Args) -> dict[str, object]:
+        _require_cli(conn, "user_ack")
+        return self._ack_as(USER_NAME, args.message_id("id"))
 
     def _ack(self, conn: ConnState, args: _Args) -> dict[str, object]:
         me = self._caller(self._deps.roster.current(), args)
-        msg_id = args.message_id("id")
+        return self._ack_as(me.name, args.message_id("id"))
+
+    def _ack_as(self, acker: str, msg_id: str) -> dict[str, object]:
         store = self._deps.store
-        row = store.find_by_id(msg_id, recipient=me.name)
+        row = store.find_by_id(msg_id, recipient=acker)
         if row is None:
-            raise NotFound("not_found", f"no message {msg_id} was sent to {me.name}")
+            raise NotFound("not_found", f"no message {msg_id} was sent to {acker}")
         if row.status in ACKABLE:
             source = row.envelope.source
             change = StatusChange(Status.ACKED)
             if store.update(source, msg_id, change, self._deps.clock.now(), expected=ACKABLE):
-                log.info("%s acked %s from %s", me.name, msg_id, source)
+                log.info("%s acked %s from %s", acker, msg_id, source)
                 self._notify()
-                return self._ack_result(msg_id, me.name)
+                return self._ack_result(msg_id, acker)
             current = store.get(source, msg_id)
             if current is None:
                 raise RuntimeError(f"message {msg_id} from {source} vanished during ack")
             log.info("stale ack for %s: row is %s", msg_id, current.status)
             row = current
         if row.status is Status.ACKED:
-            return self._ack_result(msg_id, me.name)
+            return self._ack_result(msg_id, acker)
         if row.status in NOT_YET_DELIVERED:
             raise NotFound(
                 "not_found",
