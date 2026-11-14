@@ -60,6 +60,15 @@ def n(relay_home: Path) -> Iterator[NotesRig]:
         rig.close()
 
 
+class TestBrief:
+    def test_the_brief_points_at_the_log_before_and_after_a_decision(self, n: NotesRig) -> None:
+        brief = str(n.rig.register(n.rig.hello(), "bob")["brief"])
+
+        assert "notes_search" in brief
+        assert "notes_add" in brief
+        assert "- board: " in brief
+
+
 class TestAccess:
     def test_the_board_grants_decide_who_reads_and_who_writes(self, n: NotesRig) -> None:
         n.tool("bob", "add", project="web", **NOTE)

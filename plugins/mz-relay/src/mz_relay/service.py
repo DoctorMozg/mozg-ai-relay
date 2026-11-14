@@ -255,7 +255,7 @@ class RelayService:
         conn.tokens.clear()
 
     def brief_for(self, spec: AgentSpec) -> str:
-        """Who the agent is, whom it may message and the etiquette, plus its read-only line."""
+        """Who the agent is, whom it may message, the rules, extension lines and read-only line."""
         roster = self._deps.roster.current()
         peers = [roster.agents[name] for name in sorted(spec.may_send_to) if name in roster.agents]
         lines = [
@@ -265,6 +265,9 @@ class RelayService:
             f"- {USER_NAME} : your user — reads it in the mz-relay UI or with `mz-relay inbox`",
             BRIEF_RULES,
         ]
+        extension_lines = self._deps.extensions.brief_lines(spec)
+        if extension_lines:
+            lines += ["Extensions:", *extension_lines]
         if spec.tools is ToolMode.READ_ONLY:
             lines.append(READ_ONLY_LINES[spec.harness])
         return "\n".join(lines)

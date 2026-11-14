@@ -34,6 +34,13 @@ harness = "opencode"
 label = "personal"
 role = "reviewer"
 description = "Reviews finished board tasks."
+
+[agents.frank]
+harness = "opencode"
+label = "personal"
+role = "auditor"
+description = "Reads the board, changes nothing."
+tools = "read_only"
 """
 TASK = {"title": "Fix login", "body": "The form loses its state.", "acceptance": "test passes"}
 
@@ -81,6 +88,21 @@ def b(relay_home: Path) -> Iterator[BoardRig]:
         yield live
     finally:
         rig.close()
+
+
+class TestBrief:
+    def test_the_brief_names_the_board_steps_each_agent_may_take(self, b: BoardRig) -> None:
+        def brief(agent: str) -> str:
+            return str(b.rig.register(b.rig.hello(), agent)["brief"])
+
+        worker, reviewer, reader = brief("bob"), brief("dave"), brief("frank")
+
+        assert "board_claim" in worker
+        assert "30 minutes" in worker
+        assert "board_review" not in worker
+        assert "board_review" in reviewer
+        assert "board_list" in reader
+        assert "board_claim" not in reader
 
 
 class TestAccess:

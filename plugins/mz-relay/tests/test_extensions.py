@@ -23,7 +23,7 @@ from mz_relay.extensions import (
     discover,
 )
 from mz_relay.presence import Registered
-from mz_relay.roster import parse_roster
+from mz_relay.roster import AgentSpec, ToolMode, parse_roster
 from mz_relay.store import Event
 from relay_rig import BIN, PROC_WAIT_S, McpProc, ServiceRig, paths_in, pull_roster, stop_daemon
 
@@ -46,6 +46,7 @@ class FakeExtension:
     schema_version: int = 1
     migrations: list[int] = field(default_factory=list)
     fail_on: str | None = None
+    brief_text: str = "fake: shared notes; add one with fake_add."
 
     def migrate(self, db: sqlite3.Connection, from_version: int) -> None:
         self.migrations.append(from_version)
@@ -61,6 +62,11 @@ class FakeExtension:
 
     def human_actions(self) -> Sequence[HumanAction]:
         return [HumanAction("clear", self.clear)]
+
+    def brief(self, caller: AgentSpec) -> str:
+        if caller.tools is ToolMode.READ_ONLY and self.brief_text:
+            return "fake: shared notes, read with fake_list."
+        return self.brief_text
 
     def on_event(self, db: sqlite3.Connection, event: Event, now: float) -> None:
         if event.kind == self.fail_on:
@@ -200,6 +206,28 @@ class TestAgentTools:
 
         with pytest.raises(RelayError, match="args must be an object"):
             ext_rig.call(conn, "ext_call", token=token, tool="fake_list", args=["x"])
+
+
+class TestBrief:
+    def test_each_agent_is_told_how_to_use_the_extensions_its_role_allows(
+        self, ext_rig: ServiceRig
+    ) -> None:
+        writer = ext_rig.register(ext_rig.hello(), "bob")["brief"]
+        reader = ext_rig.register(ext_rig.hello(), "dave")["brief"]
+
+        assert "Extensions:\n- fake: shared notes; add one with fake_add." in writer
+        assert "- fake: shared notes, read with fake_list." in reader
+        assert "fake_add" not in reader
+
+    def test_an_empty_brief_adds_no_extensions_section(self, relay_home: Path) -> None:
+        rig = ServiceRig(relay_home, extensions=[FakeExtension(brief_text="")])
+        try:
+            assert "Extensions:" not in rig.register(rig.hello(), "bob")["brief"]
+        finally:
+            rig.close()
+
+    def test_without_extensions_the_brief_has_no_extensions_section(self, rig: ServiceRig) -> None:
+        assert "Extensions:" not in rig.register(rig.hello(), "bob")["brief"]
 
 
 class TestRegisteredTools:

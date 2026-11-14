@@ -17,6 +17,7 @@ from mz_relay.extensions import (
     ToolCall,
     object_schema,
 )
+from mz_relay.roster import AgentSpec, ToolMode
 from mz_relay.store import Event
 
 log = logging.getLogger(__name__)
@@ -88,6 +89,12 @@ class Notes:
             HumanAction("list", self.list_notes, mutates=False),
             HumanAction("delete", self.delete),
         ]
+
+    def brief(self, caller: AgentSpec) -> str:
+        line = "notes: a decision log per project. Check notes_search before settling a question"
+        if caller.tools is ToolMode.READ_ONLY:
+            return line + "."
+        return line + " a peer may have settled already, and record decisions with notes_add."
 
     def on_event(self, db: sqlite3.Connection, event: Event, now: float) -> None:
         return None

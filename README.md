@@ -276,6 +276,8 @@ Each agent also receives a brief (MCP `instructions`, or a system-prompt additio
 - Disagree with evidence, and do not agree only because a peer sounds confident.
 - Send pointers (paths, commit hashes), not large pastes.
 
+With extensions enabled, an `Extensions:` list follows the rules, one line per extension, on how to use the tools the agent's role sees (see [Writing an extension](#writing-an-extension)).
+
 Delivery is attempted up to three times (delays 0 s, 2 s, 8 s) before a message is `undeliverable`. `inbox` also lists what the agent sent and its status, plus notices about its messages that ended undelivered, expired or denied. A recipient with no wake-up channel (pull-only) reads its messages on its next `inbox` call.
 
 ## Guards
@@ -618,6 +620,7 @@ import sqlite3
 from collections.abc import Sequence
 
 from mz_relay.extensions import ExtTool, HumanAction, HumanCall, ToolCall
+from mz_relay.roster import AgentSpec
 from mz_relay.store import Event
 
 
@@ -636,6 +639,9 @@ class Counter:
 
     def human_actions(self) -> Sequence[HumanAction]:
         return [HumanAction("total", self.total, mutates=False)]
+
+    def brief(self, caller: AgentSpec) -> str:
+        return "counter: call counter_hit once per finished task."
 
     def on_event(self, db: sqlite3.Connection, event: Event, now: float) -> None:
         return None
@@ -659,6 +665,7 @@ Enable it with `enabled = ["counter"]`. The agent tool is `counter_hit`. The ter
 - `extensions.py` also has `object_schema(properties, required)` for a closed input schema and `ExtArgs(call.args, allowed, limits)`, which reads typed arguments and raises `invalid_args` naming a bad or unknown one. The board and the notes use both.
 - Calls into one extension run one at a time under a lock, on a connection with `isolation_level=None`, so handlers open their own transactions (the board uses `BEGIN IMMEDIATE`).
 - A `HumanAction` with `mutates=False` leaves no event, so a UI that reloads on events does not loop.
+- `brief(caller)` returns one line that relayd adds under `Extensions:` in that agent's brief at register: how to use the tools the caller's role sees. An empty string adds nothing. The board's line differs for `read_only` agents and for the `reviewer` role.
 
 ## Development
 

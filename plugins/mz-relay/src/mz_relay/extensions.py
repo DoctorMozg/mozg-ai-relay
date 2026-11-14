@@ -155,6 +155,8 @@ class Extension(Protocol):
     def migrate(self, db: sqlite3.Connection, from_version: int) -> None: ...
     def tools(self) -> Sequence[ExtTool]: ...
     def human_actions(self) -> Sequence[HumanAction]: ...
+    # One line for the caller's brief on how to use the tools its role sees; "" adds none.
+    def brief(self, caller: AgentSpec) -> str: ...
     def on_event(self, db: sqlite3.Connection, event: Event, now: float) -> None: ...
 
 
@@ -231,6 +233,11 @@ class Extensions:
         for loaded in self._loaded.values():
             with loaded.lock:
                 loaded.db.close()
+
+    def brief_lines(self, caller: AgentSpec) -> list[str]:
+        """Each extension's brief line for this agent, in name order; empty ones are left out."""
+        lines = (self._loaded[name].ext.brief(caller) for name in self.names())
+        return [f"- {line}" for line in lines if line]
 
     def tools_for(self, caller: AgentSpec) -> list[dict[str, object]]:
         """The MCP tool entries this agent may call, named <extension>_<tool>."""

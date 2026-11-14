@@ -17,7 +17,7 @@ from mz_relay.extensions import (
     ToolCall,
     object_schema,
 )
-from mz_relay.roster import AgentSpec
+from mz_relay.roster import AgentSpec, ToolMode
 from mz_relay.store import Event
 
 log = logging.getLogger(__name__)
@@ -117,6 +117,19 @@ class Board:
 
     def human_actions(self) -> Sequence[HumanAction]:
         return self._admin.actions()
+
+    def brief(self, caller: AgentSpec) -> str:
+        if caller.tools is ToolMode.READ_ONLY:
+            return "board: tasks per project; read them with board_list and board_get."
+        line = (
+            "board: tasks per project. Check board_list before starting work and board_claim "
+            f"a task before working on it; a claim lapses after {data.LEASE_S // 60} minutes "
+            "without a board call. Report with board_update and hand it to review once its "
+            "acceptance criteria hold."
+        )
+        if caller.role == REVIEWER_ROLE:
+            line += " As reviewer, approve or reject tasks in review with board_review."
+        return line
 
     def on_event(self, db: sqlite3.Connection, event: Event, now: float) -> None:
         # Any relay activity is a tick; leases need no thread of their own.
