@@ -4,6 +4,18 @@ All notable changes are listed here. The format follows Keep a Changelog, and ve
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-14
+
+### Added
+
+- `mz-relay ui` serves a web page on 127.0.0.1: agents and their presence, the message timeline with filters, a live event stream, review of held messages (approve or deny), a composer and an inbox for the user. Sign-in uses a one-time token that only the starting terminal sees; requests are checked for Host, Origin, content type and size.
+- The `user` sender: `mz-relay send`, `inbox` and `ack` let a person in a terminal message agents by roster name. Agents see the sender marked as human.
+- relayd keeps an event feed (message status changes, presence, extension changes) and serves it through a long-polling `watch` op; the UI's live stream reads it.
+- An extension framework: a module under `mz_relay.ext` exporting `EXTENSION`, enabled by `[extensions] enabled = [...]` in the roster. Each extension gets its own SQLite file, migrations, agent tools named `<ext>_<tool>` (mutating ones hidden from `read_only` agents), user actions reachable only from the terminal and the UI, and the relay's event feed. The Pi adapter registers extension tools after it registers.
+- The `board` extension: per-project task lists. Agents post tasks with acceptance criteria and dependencies, claim the top ready task under a 30-minute lease, report and send work to review; only an agent with role `reviewer`, not the holder, reviews. The user creates projects, sets per-project access (`none`, `read`, `write`, default plus per-agent grants), approves, cancels, reassigns and reprioritizes from `mz-relay board` or the UI's board tab.
+- The `notes` extension: a per-project decision log (`notes_add`, `notes_search`) under the board's project access, with `mz-relay notes list|delete` and a notes tab in the UI.
+- `make live-board`: two real Claude accounts take a board task from post to done and read each other's note.
+
 ### Changed
 
 - README: the OpenCode `config` hook, the agent markers of `approve`, `deny` and `context extend`, and the `codex queue` stderr caveat are now marked as tested; the UNTESTED section lists the two claims still open.

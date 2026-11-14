@@ -3,29 +3,14 @@ Run by hand: MZ_RELAY_LIVE_CLAUDE_DIRS="<cfgA>:<cfgB>" uv run make live-claude""
 
 from __future__ import annotations
 
-import contextlib
-import json
 import secrets
-import subprocess
-import threading
-import time
 import warnings
-from collections.abc import Iterator, Mapping
 from pathlib import Path
-from typing import IO
 
 import pytest
 from fakes_claude import claude_agent
-from relay_rig import (
-    PLUGIN,
-    Message,
-    online_names,
-    paths_in,
-    reap,
-    relayd_status,
-    stop_daemon,
-    wait_until,
-)
+from relay_rig import online_names, paths_in, relayd_status, stop_daemon, wait_until
+from stream_claude import StreamJsonClaude
 
 START_S = 180.0
 PEER_LINE_S = 60.0
@@ -44,100 +29,6 @@ def live_roster(cfg_a: Path, cfg_b: Path) -> str:
         + claude_agent(cfg_a, name="livea")
         + claude_agent(cfg_b, name="liveb", label="corporate", tools="read_only")
     )
-
-
-class StreamJsonClaude:
-    """`claude -p` in stream-json mode with this plugin loaded; prompts go in on stdin."""
-
-    def __init__(
-        self, claude: str, env: Mapping[str, str], *, cwd: Path, log: Path, extra: list[str]
-    ) -> None:
-        self.events: list[Message] = []
-        # results() re-enters the lock from inside wait_results(), so it must be reentrant.
-        self._changed = threading.Condition(threading.RLock())
-        self._log = log.open("wb")
-        argv = [
-            claude,
-            "-p",
-            "--input-format",
-            "stream-json",
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--plugin-dir",
-            str(PLUGIN),
-            *extra,
-        ]
-        try:
-            self.proc = subprocess.Popen(
-                argv,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=self._log,
-                env=dict(env),
-                cwd=cwd,
-            )
-        except BaseException:
-            self._log.close()
-            raise
-        threading.Thread(target=self._read, args=(self.proc.stdout,), daemon=True).start()
-
-    def _read(self, stream: IO[bytes] | None) -> None:
-        assert stream is not None
-        for raw in iter(stream.readline, b""):
-            with contextlib.suppress(ValueError):
-                event = json.loads(raw)
-                if isinstance(event, dict):
-                    with self._changed:
-                        self.events.append(event)
-                        self._changed.notify_all()
-
-    def prompt(self, text: str) -> None:
-        assert self.proc.stdin is not None
-        line = {"type": "user", "message": {"role": "user", "content": text}}
-        self.proc.stdin.write(json.dumps(line).encode() + b"\n")
-        self.proc.stdin.flush()
-
-    def results(self) -> int:
-        with self._changed:
-            return sum(1 for event in self.events if event.get("type") == "result")
-
-    def wait_results(self, count: int, timeout_s: float) -> bool:
-        deadline = time.monotonic() + timeout_s
-        with self._changed:
-            while self.results() < count:
-                left = deadline - time.monotonic()
-                if left <= 0 or self.proc.poll() is not None:
-                    return False
-                self._changed.wait(min(left, 1.0))
-            return True
-
-    def session_id(self) -> str | None:
-        with self._changed:
-            for event in self.events:
-                if event.get("type") == "system" and event.get("subtype") == "init":
-                    sid = event.get("session_id")
-                    return sid if isinstance(sid, str) else None
-        return None
-
-    def saw(self, text: str) -> bool:
-        """True when any stream-json event so far contains `text`."""
-        with self._changed:
-            return any(text in json.dumps(event) for event in self.events)
-
-    def close(self) -> None:
-        try:
-            reap(self.proc)
-        finally:
-            self._log.close()
-
-
-@pytest.fixture
-def sessions() -> Iterator[list[StreamJsonClaude]]:
-    started: list[StreamJsonClaude] = []
-    yield started
-    for session in started:
-        session.close()
 
 
 def peer_line_with(cfg: Path, session_id: str, needle: str) -> bool:

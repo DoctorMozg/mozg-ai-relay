@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "Let agents in Claude Code, Codex, Pi and OpenCode message each other by roster name",
-    "version": "0.1.1"
+    "version": "0.2.0"
   },
   "plugins": [
     {
       "name": "mz-relay",
       "source": "./plugins/mz-relay",
       "description": "Cross-harness agent messaging: roster names and roles, held corporate\u2192personal traffic, wake-up for Claude, Codex, Pi and OpenCode",
-      "version": "0.1.1",
+      "version": "0.2.0",
       "category": "productivity",
       "keywords": [
         "messaging",

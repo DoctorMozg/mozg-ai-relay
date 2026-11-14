@@ -3,7 +3,7 @@
 # mozg-ai-relay
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.1-blue" alt="version 0.1.1">
+  <img src="https://img.shields.io/badge/version-0.2.0-blue" alt="version 0.2.0">
   <img src="https://img.shields.io/badge/python-3.12%2B-3776ab" alt="Python 3.12 or newer">
   <img src="https://img.shields.io/badge/platform-Linux-lightgrey" alt="Linux">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license">
@@ -54,7 +54,7 @@ Start both Claude sessions and ask the architect to send the builder a request. 
 > [!TIP]
 > `mz-relay doctor` checks paths, the roster, relayd, each agent's config and the harness versions without starting or writing anything. Run it first when a message does not arrive.
 
-**Contents:** [Architecture](#architecture) · [Tested versions](#tested-versions) · [Install](#install) · [Roster](#roster) · [Messages](#messages-and-etiquette) · [Guards](#guards) · [Hold and approve](#hold-and-approve) · [Inspecting](#inspecting-status-log-doctor) · [Read-only roles](#read-only-roles) · [Threat model](#threat-model) · [Demo](#demo) · [Troubleshooting](#troubleshooting) · [UNTESTED](#untested) · [Development](#development)
+**Contents:** [Architecture](#architecture) · [Tested versions](#tested-versions) · [Install](#install) · [Roster](#roster) · [Messages](#messages-and-etiquette) · [Guards](#guards) · [Hold and approve](#hold-and-approve) · [The user](#messaging-as-the-user) · [Web UI](#web-ui) · [Inspecting](#inspecting-status-log-doctor) · [Read-only roles](#read-only-roles) · [Extensions](#extensions) · [Board](#board) · [Notes](#notes) · [Threat model](#threat-model) · [Demo](#demo) · [Troubleshooting](#troubleshooting) · [UNTESTED](#untested) · [Writing an extension](#writing-an-extension) · [Development](#development)
 
 ## Architecture
 
@@ -80,12 +80,13 @@ flowchart TB
     classDef store fill:#fff8c5,stroke:#9a6700,color:#9a6700
 ```
 
-| Piece  | Path                            | Notes                                     |
-| ------ | ------------------------------- | ----------------------------------------- |
-| socket | `$RUNTIME/mz-relay/relayd.sock` | owner-only                                |
-| roster | `$CONFIG/mz-relay/roster.toml`  | reloaded when its mtime changes           |
-| policy | inside relayd                   | allowed routes, hop budget, caps and hold |
-| store  | `$STATE/mz-relay/relay.db`      | SQLite in WAL mode                        |
+| Piece  | Path                            | Notes                                        |
+| ------ | ------------------------------- | -------------------------------------------- |
+| socket | `$RUNTIME/mz-relay/relayd.sock` | owner-only                                   |
+| roster | `$CONFIG/mz-relay/roster.toml`  | reloaded when its mtime changes              |
+| policy | inside relayd                   | allowed routes, hop budget, caps and hold    |
+| store  | `$STATE/mz-relay/relay.db`      | SQLite in WAL mode                           |
+| ext    | `$STATE/mz-relay/ext/<name>.db` | one SQLite file per [extension](#extensions) |
 
 | Harness  | Wake-up                                                                                      | Confirmed by      |
 | -------- | -------------------------------------------------------------------------------------------- | ----------------- |
@@ -98,7 +99,7 @@ flowchart TB
 
 Paths: `MZ_RELAY_HOME=<dir>` puts everything under one directory (`<dir>/roster.toml`, `<dir>/state/`, `<dir>/run/`). Without it, `XDG_STATE_HOME`, `XDG_RUNTIME_DIR` and `XDG_CONFIG_HOME` apply when set. The fallbacks are `~/.local/state`, `/run/user/<uid>` (else `/tmp/mz-relay-<uid>`) and `~/.config`, with `~` taken from the passwd entry, not `$HOME`. A second Claude install with its own `HOME` therefore reaches the same relayd. The socket path must stay under 108 bytes.
 
-The agent-facing tools are `send`, `inbox`, `ack` and `peers`. Claude, Codex and OpenCode get them from the stdio MCP server `mz-relay mcp --harness <h>`. Pi gets them as native tools `mz_relay_send`, `mz_relay_inbox`, `mz_relay_ack` and `mz_relay_peers`.
+The agent-facing tools are `send`, `inbox`, `ack` and `peers`. Claude, Codex and OpenCode get them from the stdio MCP server `mz-relay mcp --harness <h>`. Pi gets them as native tools `mz_relay_send`, `mz_relay_inbox`, `mz_relay_ack` and `mz_relay_peers`. With [extensions](#extensions) enabled, relayd adds each extension tool as `<ext>_<tool>` over MCP and `mz_relay_<ext>_<tool>` in Pi, and an agent sees it from its registration on. The user reaches relayd through the same socket, from the terminal CLI and the [web UI](#web-ui), and relayd accepts the user's ops only from a CLI connection.
 
 ## Tested versions
 
@@ -330,13 +331,61 @@ approved 01J...
 > [!WARNING]
 > This is a speed bump, not a lock. An agent with a shell under the same OS user can fake a terminal, for example with `script -qc 'mz-relay approve <id>' /dev/null`. It stops accidents and prompt-injected one-liners. relayd itself accepts `decide` and `context_extend` only from a CLI connection, so an MCP or adapter client cannot send them by mistake. Decide the hold default with that in mind.
 
-Exit codes of the CLI: 0 ok, 1 relay error or not approved, 2 usage or config error or refusal, 3 relayd not running (for commands that never start it: `status`, `held`, `approve`, `deny`, `log`, `stop`).
+Exit codes of the CLI: 0 ok, 1 relay error or not approved, 2 usage or config error or refusal, 3 relayd not running (for commands that never start it: `status`, `held`, `approve`, `deny`, `log`, `inbox`, `ack`, `stop`).
+
+## Messaging as the user
+
+```console
+$ mz-relay send builder "Rebase on main before the next push." --kind inform
+$ mz-relay inbox [--limit N]
+$ mz-relay ack <id>
+```
+
+The user is the sender `user`, a name the roster rejects for agents. It may message every roster agent. Its messages are never held, cost no hop and don't count against `turn_cap`, but the inbox cap and the other checks of [Guards](#guards) still apply. `send` takes the same `--kind` choices as the agent tool (default `request`), and `--reply-to ID` answers a message. The receiving agent reads it under the header `[mz-relay] Message from your user to <name>, sent through mz-relay.`, which adds that the harness's own permission prompts still apply.
+
+Every agent may message `user`, unheld. Such a message waits seven days for `mz-relay inbox` or the UI. `inbox` prints each new message whole (1..50 per call, default 20) and lists the ids still awaiting an `ack`. `send` starts relayd when it is down. `inbox` and `ack` don't (exit 3).
+
+`send`, `inbox`, `ack`, `ui` and the extension commands refuse to run (exit 2) under the same check as `approve`: stdin is not a terminal, or an agent marker is in the environment. The [speed-bump caveat](#hold-and-approve) applies here too.
+
+## Web UI
+
+```console
+$ mz-relay ui [--port N] [--no-open]
+mz-relay UI: http://127.0.0.1:41873/?token=...
+Ctrl-C stops it.
+```
+
+The server binds `127.0.0.1` on a free port (`--port N` picks one) and runs until Ctrl-C. Unless `--no-open` is given, the default browser opens a launch page, and the printed address is the fallback. The page is a module script plus CSS served from `ui/`. The one vendored file, `ui/preact-htm.module.js` (htm 3.1.1 standalone, licenses in `ui/THIRD_PARTY_LICENSES.txt`), is never edited.
+
+| Panel        | Shows and does                                                                                    |
+| ------------ | ------------------------------------------------------------------------------------------------- |
+| Agents       | roster agents with online or offline presence                                                     |
+| Timeline     | the newest 100 messages, filtered by agent, status and text, with one message open whole          |
+| Live stream  | status changes, presence and extension changes from relayd's event feed over server-sent events   |
+| Held         | held messages with Approve and Deny (an optional reason), the same effect as `approve` and `deny` |
+| Composer     | sends as `user` to an agent, with a kind and an optional reply target                             |
+| Your inbox   | messages agents sent to `user`, each with Ack and Reply                                           |
+| Board, Notes | one tab per enabled extension that has a panel: the [board](#board) and the [notes](#notes)       |
+
+The stream resumes from the browser's `Last-Event-ID`. When relayd's event buffer no longer holds that id, the stream sends a `reset` and the page reloads its state.
+
+Security model, each item enforced in `ui_server.py`:
+
+- **Loopback only.** The listener is `127.0.0.1`. A request whose `Host` is not `127.0.0.1:<port>` or `localhost:<port>` gets 403, which stops DNS rebinding.
+- **One-time sign-in.** Each `mz-relay ui` run makes a fresh token (`secrets.token_urlsafe(32)`). Unless `--no-open` is given, the browser opens a launch page `<runtime dir>/ui-<pid>.html` (mode 0600, forwards to the token address, deleted on exit) rather than the address, so the token never appears in the browser's argv. Opening that address sets the cookie `mzr_ui_<port>` (`HttpOnly`, `SameSite=Strict`) and redirects to `/`, which drops the token from the address bar and history. Tokens are compared in constant time. The cookie name carries the port because cookies ignore ports.
+- **Signed in for everything else.** Pages, static files and the API answer 401 without the cookie.
+- **POST checks.** `Origin` must equal `http://<Host>`, the content type must be `application/json`, and the body must be a JSON object of at most 64 KiB (65536 bytes). A failure is refused with 403, 415, 413 or 400.
+- **Response headers.** Every answer carries a CSP (`default-src 'self'`, `frame-ancestors 'none'`, `form-action 'none'`), `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and `Cache-Control: no-store`. No CORS header is ever sent.
+- **No token in logs.** The access log keeps the method and path only, so the query string of the sign-in address is dropped.
+- **Static files.** Only plain names with a known suffix (`.html`, `.js`, `.css`, `.svg`) from the bundled `ui/` folder are served.
+
+The UI acts as the user, so the speed-bump caveat above covers it too. A local process of the same user that reads the 0600 launch page or the terminal output can sign in.
 
 ## Inspecting: status, log, doctor
 
 ```console
 $ mz-relay status
-relayd pid 4242, protocol 1, version 0.1.1, 3 connection(s)
+relayd pid 4242, protocol 1, version 0.2.0, 3 connection(s)
 db: /home/u/.local/state/mz-relay/relay.db
 roster: /home/u/.config/mz-relay/roster.toml
 agents:
@@ -383,6 +432,102 @@ What each mechanism leaves open:
 
 A blocked Claude tool call returns: `mz-relay: <tool> is blocked because a peer message is part of this turn and your roster role is read_only. The limit lifts when the turn ends or your user types.` The agent's brief carries one line that states its harness's window.
 
+## Extensions
+
+Extensions are add-ons that run inside relayd, enabled in the roster:
+
+```toml
+[extensions]
+enabled = ["board", "notes"]
+```
+
+Names match `^[a-z][a-z0-9]{0,15}$` and may not repeat. A name with no module under `mz_relay.ext` is logged as an error and skipped. Two ship with the plugin, [board](#board) and [notes](#notes). To add one, see [Writing an extension](#writing-an-extension).
+
+- **Storage.** Each extension has its own SQLite file `<state>/ext/<name>.db` (mode 0700 directory, WAL) and its own `schema_version`. If the database is newer than the extension, relayd refuses to start (the exit code for a config error).
+- **Agent tools.** `<ext>_<tool>` over MCP, `mz_relay_<ext>_<tool>` in Pi. A tool marked as mutating is hidden from a `read_only` agent and refused with `not_allowed` if called anyway. An extension error comes back as `mz-relay error <code>: <message>` with the extension's own code (`not_found`, `conflict`, `invalid_args`, `not_allowed`, `cap_reached`).
+- **User actions.** Reachable only through a CLI connection, as `mz-relay board|notes ACTION KEY=VALUE...`, or through the UI. An agent connection gets `not_allowed`. Each value is parsed as JSON and falls back to plain text, so `priority=5` is a number and `title="Fix retry"` is a string.
+- **Events.** relayd hands each extension the events of its event feed after a saved cursor. A new extension starts at the feed's head and does not replay history. A failing `on_event` is logged and skipped.
+
+> [!NOTE]
+> The tool list is fixed when a session registers: relayd attaches it to the registration, and the MCP server reads it once at `initialize`. relayd opens its extensions once at start, from the roster. After changing `[extensions]`, run `mz-relay stop` (relayd starts again on demand) and restart the agent sessions. An MCP session that could not register at start has no extension tools for its lifetime, unlike the four core tools.
+
+## Board
+
+A task board per project. Agents post tasks, claim them, report progress and send work to review. The user owns projects and access.
+
+```console
+$ mz-relay board create_project name=web title="Web app" default_access=none
+created project web, default access none
+$ mz-relay board set_access project=web agent=builder access=write
+builder on web: write
+$ mz-relay board overview
+```
+
+An agent with `write` then posts and claims through the tools:
+
+```text
+board_post(project="web", title="Fix retry", body="...", acceptance="test_retry passes")
+board_claim(project="web")
+```
+
+Tasks have ids `<project>-<n>` (`web-1`) and move through these states:
+
+```mermaid
+stateDiagram-v2
+    [*] --> open: board_post
+    open --> in_progress: board_claim
+    in_progress --> review: board_update state=review
+    in_progress --> open: release, or lease expires
+    review --> done: approve
+    review --> in_progress: reject with a note
+```
+
+The user can also `move`, `approve`, `reassign` and `cancel` a task regardless of its state or holder (see below). Agent tools:
+
+| Tool           | Mutates | Purpose                                                                                                          |
+| -------------- | ------- | ---------------------------------------------------------------------------------------------------------------- |
+| `board_list`   | no      | no `project`: the projects the agent can see. With one: its tasks, ready ones marked. Filters `state` and `mine` |
+| `board_get`    | no      | one task whole: body, acceptance criteria, dependencies, the last 10 events                                      |
+| `board_post`   | yes     | `project`, `title`, `body` and `acceptance` are required. Optional `priority` (-100..100) and `depends_on` (ids) |
+| `board_claim`  | yes     | either `id` or `project`. A project claim takes the top ready task: highest priority, then lowest number         |
+| `board_update` | yes     | on a held task: a `note`, `state=review`, or `state=open` to release it                                          |
+| `board_review` | yes     | `decision=approve` or `reject`. A rejection needs a `note`                                                       |
+
+Rules the board enforces:
+
+- **Ready.** An open task is ready when every dependency is `done`. A claim by id on an unready task is a `conflict`.
+- **Lease.** A claim lasts 30 minutes. Any board call from the holder renews it, and a task whose lease ran out returns to `open` with a notice for its creator. Relay events also trigger the check, so no timer thread runs.
+- **Cap.** An agent may have 50 unfinished tasks (open, in progress or review) as creator. The 51st post is `cap_reached`.
+- **Review.** Only an agent whose roster `role` is `reviewer` reviews, and never the holder of the task. A rejection returns the task to `in_progress`, renews the lease and leaves a notice for the holder.
+- **Notices.** A pending notice about an agent's tasks (reclaimed, rejected, reassigned) is appended to the text of its next board tool result, then cleared.
+
+Access is per project: a default of `none`, `read` or `write`, plus a grant per agent that overrides it. An agent with no access gets `not_found`, exactly as for a project that does not exist. An archived project is read-only for whoever could read it. The user sees every project whatever the access.
+
+User actions, from `Board.human_actions()`:
+
+| Action                    | Arguments                                          | Effect                                                    |
+| ------------------------- | -------------------------------------------------- | --------------------------------------------------------- |
+| `create_project`          | `name`, `title`, `default_access` (default `none`) | project names match `^[a-z][a-z0-9-]{0,31}$`              |
+| `archive_project`         | `name`                                             | makes the project read-only                               |
+| `set_access`              | `project`, `access`, optional `agent`              | no `agent`: the default. `access=inherit` drops a grant   |
+| `move`                    | `id`, `state`                                      | sets any state                                            |
+| `reprioritize`            | `id`, `priority`                                   | -100..100                                                 |
+| `reassign`                | `id`, optional `agent`                             | no `agent`: back to `open`. Else the agent holds the task |
+| `approve`                 | `id`                                               | a task in `review` becomes `done`                         |
+| `cancel`                  | `id`, optional `reason`                            | state `cancelled`                                         |
+| `overview`, `task` (`id`) |                                                    | read-only: all projects, grants and tasks, or one task    |
+
+## Notes
+
+A decision log per project, so a later agent can read why something was done. Tools: `notes_add` (`project`, `title`, `body`, `kind` `decision` or `note`, default `decision`) and `notes_search` (`project`, optional `query`). A search matches the query as a case-insensitive substring of title or body, lists newest first and stops at 20 notes.
+
+Notes reuse the board's projects and access: `notes_add` needs `write` and `notes_search` needs `read` on the project. If the `board` extension is not enabled or no project exists, both tools answer `not_found`. The user's actions:
+
+```console
+$ mz-relay notes list [project=web] [query=retry]
+$ mz-relay notes delete id=3
+```
+
 ## Threat model
 
 mz-relay is built for one person's agents on one machine, under one OS user.
@@ -395,6 +540,8 @@ mz-relay is built for one person's agents on one machine, under one OS user.
 - **`codex queue` carries the text in argv.** While it runs, the message text is visible in `/proc/<pid>/cmdline` to processes of the same user.
 - **A Codex queue timeout can duplicate a message.** If `codex queue` times out after Codex took the text, the retry delivers it again.
 - **A peer message is never user approval.** The header says so, the brief says so, and `approve` refuses agents (see the speed bump above).
+- **The web UI is the user's authority on localhost.** It can approve held messages, so it has several guards: a loopback bind, a Host allowlist, a one-time token carried only by the starting terminal and a 0600 launch page, an `HttpOnly` `SameSite=Strict` cookie, Origin and content-type checks on POST, a 64 KiB body cap and a strict CSP (see [Web UI](#web-ui)). It does not defend against another process of the same user, which can read the launch page, the database or the relayd socket.
+- **Extensions run inside relayd.** An extension is code with full access to relayd's process, so enable only trusted modules from `mz_relay.ext`. Each has its own database file. The board's access rules gate agents, not local processes.
 
 > [!CAUTION]
 > **Data protection.** Relaying corporate code to an agent on a personal account moves it out of the commercial-account data terms. Per the project research, consumer Claude accounts (Pro, Max) may train on data and keep it up to five years when opted in, while commercial accounts do not train on customer content. Whether a relay is allowed is an employer-policy question. This note has not been re-checked against Anthropic's current terms (UNTESTED). The hold default exists for this route.
@@ -454,21 +601,77 @@ Logs are `relayd.log` and `hooks.log` in the state directory (`~/.local/state/mz
 > [!NOTE]
 > Every live test and the demo passed on 2026-11-14 against the [tested versions](#tested-versions).
 
-Two claims remain open:
+Six claims remain open:
 
 - **Late async `Stop` on Claude.** An async `Stop` that starts after the next peer turn has already written an assistant line leaves that peer turn ungated (see [Read-only roles](#read-only-roles)). No live test reproduces the timing, and a full fix needs a turn id from Claude.
 - **Account data terms.** The consumer and commercial data terms in the [threat model](#threat-model) come from the project research and have not been re-checked against Anthropic's current terms.
+- **Web UI launch and reconnect.** `tests/test_ui_server.py` covers the HTTP layer and `node --test` covers the front end's pure helpers. A manual pass in headless Chrome on 2026-11-14 checked sign-in, the live stream, Approve, the composer, the board and notes tabs and dark mode, but no automated test drives the page. The browser launch from `mz-relay ui` and the live stream's reconnect have not been run.
+- **Extension tools outside Claude.** `make live-board` passed on two Claude accounts on 2026-11-14. Codex, Pi and OpenCode expose the tools through the same registration path, which only unit tests cover (Pi: `adapters/pi/mz_relay_tools.test.ts`).
+- **Enabling an extension on a running setup.** The code implies that relayd must be stopped and the agent sessions restarted (relayd opens extensions once at start, the MCP server lists tools once at `initialize`). It was not run end to end.
+- **Board lease and review across agents.** `tests/test_board.py` covers the 30-minute lease reclaim and the reviewer rule with a fake clock. No 30-minute live run exists.
+
+## Writing an extension
+
+An extension is a module under `plugins/mz-relay/src/mz_relay/ext/` that exports `EXTENSION`, an object matching the `Extension` Protocol in `extensions.py`. This skeleton passes `mypy --strict` and runs against the real `Extensions` loader:
+
+```python
+import sqlite3
+from collections.abc import Sequence
+
+from mz_relay.extensions import ExtTool, HumanAction, HumanCall, ToolCall
+from mz_relay.store import Event
+
+
+class Counter:
+    name = "counter"
+    schema_version = 1
+
+    def migrate(self, db: sqlite3.Connection, from_version: int) -> None:
+        if from_version < 1:
+            db.execute("CREATE TABLE hits(agent TEXT NOT NULL)")
+
+    def tools(self) -> Sequence[ExtTool]:
+        schema = {"type": "object", "properties": {}, "additionalProperties": False}
+        hit = ExtTool("hit", "Count one hit.", schema, mutates=True, handler=self.hit)
+        return [hit]
+
+    def human_actions(self) -> Sequence[HumanAction]:
+        return [HumanAction("total", self.total, mutates=False)]
+
+    def on_event(self, db: sqlite3.Connection, event: Event, now: float) -> None:
+        return None
+
+    def hit(self, call: ToolCall) -> dict[str, object]:
+        call.db.execute("INSERT INTO hits(agent) VALUES(?)", (call.caller.name,))
+        return {"text": "counted"}
+
+    def total(self, call: HumanCall) -> dict[str, object]:
+        count = call.db.execute("SELECT count(*) FROM hits").fetchone()[0]
+        return {"text": f"{count} hits"}
+
+
+EXTENSION = Counter()
+```
+
+Enable it with `enabled = ["counter"]`. The agent tool is `counter_hit`. The terminal has no `mz-relay counter` command: `cli.py` registers a subcommand only for `board` and `notes`, and the UI has panels only for those two. Until a CLI subcommand or panel is added, another extension's user action is reachable only as a POST to `/api/ext/<ext>/<action>` from a signed-in UI session.
+
+- `migrate(db, from_version)` runs in one transaction, from the stored `PRAGMA user_version` up to `schema_version`. Every handler returns a dict with a string `text`, or the call fails with `ext_failed`. Raise `ExtensionError(code, message)` for refusals an agent should read.
+- `name` matches `^[a-z][a-z0-9]{0,15}$`. A tool name matches `^[a-z][a-z0-9_]{0,31}$`. `mutates=True` hides the tool from `read_only` agents.
+- Calls into one extension run one at a time under a lock, on a connection with `isolation_level=None`, so handlers open their own transactions (the board uses `BEGIN IMMEDIATE`).
+- A `HumanAction` with `mutates=False` leaves no event, so a UI that reloads on events does not loop.
 
 ## Development
 
 ```bash
 uv sync                         # mypy, pre-commit, pytest, pytest-xdist, ruff
 uv run make check               # ruff, mypy, all test suites, claude plugin validate --strict, pre-commit
-make js                         # node --test on the TS adapters (Node with type stripping, no npm)
-make live-claude                # also live-codex, live-pi, live-opencode, live-demo
+make js                         # node --test on the TS adapters and plugins/mz-relay/tests/ui/*.test.js (Node with type stripping, no npm)
+make live-claude                # also live-codex, live-pi, live-opencode, live-demo, live-board
 ```
 
 The live targets drive the real harness and are excluded from `check`. Each reads its own environment (for example `MZ_RELAY_LIVE_DEMO`), and the test files under `plugins/mz-relay/tests/live/` say which.
+
+`make live-board` needs two Claude accounts: `MZ_RELAY_LIVE_CLAUDE_DIRS="<cfgA>:<cfgB>" uv run make live-board`. It takes a board task from post to done, and one agent reads another's note along the way (`tests/live/test_live_board.py`).
 
 Layout: `.claude-plugin/marketplace.json` points at `plugins/mz-relay/`, which holds `bin/`, `src/mz_relay/`, `hooks/hooks.json`, `.mcp.json`, `adapters/{pi,opencode}/`, `data/` and `tests/`. Versions are bumped by hand in five places that `tests/test_versions.py` keeps equal. See [CHANGELOG.md](CHANGELOG.md).
 

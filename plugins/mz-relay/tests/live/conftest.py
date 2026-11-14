@@ -6,9 +6,11 @@ import os
 import shlex
 import shutil
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from stream_claude import StreamJsonClaude
 
 
 def require_env(name: str) -> str:
@@ -94,3 +96,11 @@ def claude_bin() -> str:
     if "--plugin-dir" not in usage:
         pytest.skip("this claude has no --plugin-dir option")
     return found
+
+
+@pytest.fixture
+def sessions() -> Iterator[list[StreamJsonClaude]]:
+    started: list[StreamJsonClaude] = []
+    yield started
+    for session in started:
+        session.close()
