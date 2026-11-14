@@ -1,4 +1,5 @@
 // The mz-relay UI: agents, live traffic, the held queue, a composer and the user's inbox.
+import { Board } from "./board.js";
 import { html, render, useCallback, useEffect, useRef, useState } from "./preact-htm.module.js";
 import {
   USER,
@@ -13,7 +14,7 @@ import {
 
 const STATUSES = ["queued", "held", "delivering", "handed_off", "delivered", "fallback", "leased", "acked", "denied", "undeliverable", "expired"];
 const KINDS = ["request", "inform", "reply", "done"];
-const STREAM_EVENTS = ["message", "presence"];
+const STREAM_EVENTS = ["message", "presence", "ext"];
 const REFRESH_MS = 250;
 
 async function api(path, body) {
@@ -236,6 +237,10 @@ function App() {
   const [stream, setStream] = useState("connecting");
   const [error, setError] = useState(null);
   const [replyTo, setReplyTo] = useState(null);
+  const [tab, setTab] = useState("relay");
+  // Bumped on every extension change, reset and reconnect; the board reloads on it.
+  const [extTick, setExtTick] = useState(0);
+  const bumpExt = () => setExtTick((n) => n + 1);
   const timer = useRef(null);
   // The stream handler outlives renders, so it reads the newest model through a ref.
   const latest = useRef(model);
@@ -271,14 +276,19 @@ function App() {
       latest.current = result.model;
       setModel(result.model);
       if (result.refresh) reloadSoon();
+      if (result.ext) bumpExt();
       if (result.inbox) pullInbox();
     };
     STREAM_EVENTS.forEach((name) => source.addEventListener(name, onEvent));
-    source.addEventListener("reset", reload);
+    source.addEventListener("reset", () => {
+      reload();
+      bumpExt();
+    });
     source.addEventListener("relay-error", (e) => setError(JSON.parse(e.data).error.message));
     source.onopen = () => {
       setStream("live");
       reload();
+      bumpExt();
     };
     source.onerror = () => setStream("reconnecting");
     return () => source.close();
@@ -298,9 +308,15 @@ function App() {
       <h1>mz-relay</h1>
       <span class="stream ${stream}" role="status">${stream}</span>
       ${model.relay && html`<span class="muted">relayd ${model.relay.version} · pid ${model.relay.pid}</span>`}
+      ${model.extensions.includes("board") && html`
+        <nav class="tabs" aria-label="Views">
+          ${["relay", "board"].map((name) => html`
+            <button class=${tab === name ? "active" : ""} aria-pressed=${tab === name} onClick=${() => setTab(name)}>${name}</button>`)}
+        </nav>`}
     </header>
     ${error && html`<p class="banner error" role="alert">${error}</p>`}
-    <main>
+    ${tab === "board" && html`<main class="wide"><${Board} api=${api} agents=${model.agents} tick=${extTick} /></main>`}
+    <main hidden=${tab !== "relay"}>
       <div class="col">
         <${Agents} agents=${model.agents} />
         <${Held} held=${model.held} onChange=${reload} />

@@ -358,3 +358,108 @@ code {
   font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
   font-size: 12px;
 }
+
+[hidden] {
+  display: none !important;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.tabs button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+main.wide {
+  display: block;
+}
+
+.board {
+  display: grid;
+  gap: 12px;
+}
+
+.toolbar,
+.new-project {
+  justify-content: flex-start;
+}
+
+.access summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.access .row {
+  margin-top: 8px;
+}
+
+.grants li {
+  padding: 4px 0;
+}
+
+.board-body {
+  display: grid;
+  grid-template-columns: 1fr minmax(300px, 380px);
+  gap: 12px;
+  align-items: start;
+}
+
+.board-body:not(:has(.drawer)) {
+  grid-template-columns: 1fr;
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.column li {
+  padding: 0;
+  border: 0;
+}
+
+.column li + li {
+  margin-top: 8px;
+}
+
+.card {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 8px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.card:hover {
+  border-color: var(--accent);
+}
+
+.card .title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.drawer h3 {
+  margin: 12px 0 4px;
+  font-size: 14px;
+}
+
+.events li {
+  padding: 4px 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 960px) {
+  .board-body {
+    grid-template-columns: 1fr;
+  }
+}

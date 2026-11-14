@@ -20,8 +20,10 @@ export function statusTone(status) {
   return TONES[status] ?? "wait";
 }
 
+export const BOARD_COLUMNS = ["open", "in_progress", "review", "done"];
+
 export function emptyModel() {
-  return { agents: [], log: [], held: [], head: 0, relay: null };
+  return { agents: [], log: [], held: [], head: 0, relay: null, extensions: [] };
 }
 
 // The /api/state answer as the model: roster cards from peers, online flags from status.
@@ -33,6 +35,7 @@ export function modelFromState(state) {
     held: state.held.messages,
     head: state.head,
     relay: { pid: state.status.pid, version: state.status.version },
+    extensions: state.status.extensions ?? [],
   };
 }
 
@@ -44,6 +47,9 @@ export function applyEvent(model, event) {
   if (event.kind === "presence") {
     const agents = model.agents.map((a) => (a.name === event.agent ? { ...a, online: event.online } : a));
     return { model: { ...model, agents, head }, refresh: false, inbox: false };
+  }
+  if (event.kind === "ext") {
+    return { model: { ...model, head }, refresh: false, inbox: false, ext: event.ext };
   }
   const known = model.log.some((m) => sameMessage(m, event));
   const log = model.log.map((m) => (sameMessage(m, event) ? { ...m, status: event.status } : m));
@@ -77,4 +83,19 @@ export function mergeInbox(current, result) {
 export function clockTime(iso) {
   const at = new Date(iso);
   return Number.isNaN(at.getTime()) ? iso : at.toLocaleTimeString([], { hour12: false });
+}
+
+// One project's tasks by board column; cancelled ones only when asked for.
+export function boardColumns(tasks, project, { cancelled = false } = {}) {
+  const names = cancelled ? [...BOARD_COLUMNS, "cancelled"] : BOARD_COLUMNS;
+  const columns = Object.fromEntries(names.map((name) => [name, []]));
+  for (const task of tasks) {
+    if (task.project === project && columns[task.state]) columns[task.state].push(task);
+  }
+  return columns;
+}
+
+// The access an agent has on a project: its grant, else the project's default.
+export function accessOf(project, agent) {
+  return project.grants[agent] ?? project.default_access;
 }

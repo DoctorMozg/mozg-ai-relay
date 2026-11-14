@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
 import {
+  accessOf,
   applyEvent,
+  boardColumns,
   emptyModel,
   filterMessages,
   mergeInbox,
@@ -115,5 +117,37 @@ describe("statusTone", () => {
     assert.equal(statusTone("denied"), "bad");
     assert.equal(statusTone("acked"), "done");
     assert.equal(statusTone("something-new"), "wait");
+  });
+});
+
+describe("board helpers", () => {
+  const tasks = [
+    { id: "web-1", project: "web", state: "open" },
+    { id: "web-2", project: "web", state: "review" },
+    { id: "api-1", project: "api", state: "open" },
+    { id: "web-3", project: "web", state: "cancelled" },
+  ];
+
+  test("boardColumns groups one project's tasks and hides cancelled ones by default", () => {
+    const columns = boardColumns(tasks, "web");
+
+    assert.deepEqual(Object.keys(columns), ["open", "in_progress", "review", "done"]);
+    assert.deepEqual(columns.open.map((t) => t.id), ["web-1"]);
+    assert.deepEqual(columns.review.map((t) => t.id), ["web-2"]);
+    assert.deepEqual(boardColumns(tasks, "web", { cancelled: true }).cancelled.map((t) => t.id), ["web-3"]);
+  });
+
+  test("accessOf prefers a grant over the default", () => {
+    const project = { default_access: "none", grants: { bob: "write" } };
+
+    assert.equal(accessOf(project, "bob"), "write");
+    assert.equal(accessOf(project, "carol"), "none");
+  });
+
+  test("an ext event names the extension and asks for no relay reload", () => {
+    const { refresh, ext } = applyEvent(model(), { seq: 3, kind: "ext", ext: "board", agent: "bob" });
+
+    assert.equal(refresh, false);
+    assert.equal(ext, "board");
   });
 });

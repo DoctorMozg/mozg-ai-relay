@@ -7,7 +7,7 @@ import json
 import logging
 import os
 from collections.abc import Iterator
-from contextlib import closing
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -26,7 +26,7 @@ from mz_relay.ui_server import (
     new_token,
     write_launch_page,
 )
-from relay_rig import InThread, ServiceRig
+from relay_rig import InThread, ServiceRig, pull_roster, running_daemon
 
 BODY = "please look at src/app.py"
 STREAM_S = 5.0
@@ -124,14 +124,12 @@ def read_event(resp: http.client.HTTPResponse) -> dict[str, str]:
         frame[name] = value
 
 
-@pytest.fixture
-def ui(daemon_paths: Paths) -> Iterator[Ui]:
-    cfg = UiConfig(
-        connect=lambda: cli_client(daemon_paths), token=new_token(), static=bundled_static()
-    )
+@contextmanager
+def serving_ui(paths: Paths) -> Iterator[Ui]:
+    cfg = UiConfig(connect=lambda: cli_client(paths), token=new_token(), static=bundled_static())
     server = UiServer(cfg)
     serving = InThread(server.serve_forever)
-    live = Ui(server=server, paths=daemon_paths)
+    live = Ui(server=server, paths=paths)
     try:
         yield live
     finally:
@@ -140,6 +138,19 @@ def ui(daemon_paths: Paths) -> Iterator[Ui]:
         server.shutdown()
         serving.result(STREAM_S)
         server.server_close()
+
+
+@pytest.fixture
+def ui(daemon_paths: Paths) -> Iterator[Ui]:
+    with serving_ui(daemon_paths) as live:
+        yield live
+
+
+@pytest.fixture
+def board_ui(relay_paths: Paths) -> Iterator[Ui]:
+    roster = pull_roster(relay_paths.config_dir) + '\n[extensions]\nenabled = ["board"]\n'
+    with running_daemon(relay_paths, roster_text=roster), serving_ui(relay_paths) as live:
+        yield live
 
 
 class TestSignIn:
@@ -231,6 +242,7 @@ class TestRequestGuards:
         [
             ("app.js", "text/javascript; charset=utf-8"),
             ("view.js", "text/javascript; charset=utf-8"),
+            ("board.js", "text/javascript; charset=utf-8"),
             ("preact-htm.module.js", "text/javascript; charset=utf-8"),
             ("app.css", "text/css; charset=utf-8"),
         ],
@@ -371,3 +383,34 @@ class TestUiCommand:
 
         assert os.stat(page).st_mode & 0o777 == 0o600
         assert f'content="0;url={url}"' in page.read_text()
+
+
+class TestExtensionActions:
+    def test_a_board_action_runs_as_the_user_and_answers_its_data(self, board_ui: Ui) -> None:
+        created = ui_ok(board_ui.post("/api/ext/board/create_project", {"name": "web"}))
+        overview = ui_ok(board_ui.post("/api/ext/board/overview", {}))
+
+        assert created["text"] == "created project web, default access none"
+        projects = overview["projects"]
+        assert isinstance(projects, list)
+        assert [p["name"] for p in projects] == ["web"]
+
+    def test_an_action_error_keeps_its_relay_code(self, board_ui: Ui) -> None:
+        resp = board_ui.post("/api/ext/board/approve", {"id": "web-9"})
+
+        assert resp.status == 404
+        assert read_json(resp)["error"]["code"] == "not_found"  # type: ignore[index]
+
+    @pytest.mark.parametrize("path", ["/api/ext/board", "/api/ext/board/overview/x"])
+    def test_a_malformed_extension_path_has_no_route(self, ui: Ui, path: str) -> None:
+        assert ui.post(path, {}).status == 404
+
+    def test_extension_actions_need_our_origin(self, board_ui: Ui) -> None:
+        resp = board_ui.post("/api/ext/board/create_project", {"name": "web"}, {"Origin": None})
+
+        assert resp.status == 403
+
+
+def ui_ok(resp: http.client.HTTPResponse) -> dict[str, object]:
+    assert resp.status == 200, resp.read()
+    return read_json(resp)

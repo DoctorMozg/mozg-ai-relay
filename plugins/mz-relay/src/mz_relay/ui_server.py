@@ -215,6 +215,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, self._relay("user_inbox", {}))
         elif path == "/api/ack":
             self._json(HTTPStatus.OK, self._relay("user_ack", {"id": body.get("id")}))
+        elif path.startswith("/api/ext/") and path.count("/") == 4:
+            _, _, _, ext, action = path.split("/")
+            args = {"ext": ext, "action": action, "args": body}
+            self._json(HTTPStatus.OK, self._relay("ext_human", args))
         else:
             raise _Refused(HTTPStatus.NOT_FOUND, f"no route {path}")
 
