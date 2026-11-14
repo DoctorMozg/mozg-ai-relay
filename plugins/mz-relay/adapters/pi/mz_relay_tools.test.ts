@@ -154,3 +154,56 @@ describe("tool calls", () => {
     assert.deepEqual(result.details, {});
   });
 });
+
+describe("extension tools", () => {
+  const BOARD_LIST = {
+    name: "board_list",
+    description: "List the board's tasks.",
+    inputSchema: { type: "object", properties: { project: { type: "string" } }, additionalProperties: false },
+  };
+
+  // A rig whose relayd answers register with these ext_tools, registered before the test goes on.
+  async function rigWithTools(extTools: unknown): Promise<PiRig> {
+    const r = await startRig({ sessionStart: false });
+    r.fakeRelayd.onOp("register", () => ({
+      result: {
+        token: FAKE_TOKEN,
+        agent: { name: "scout", role: "scout", harness: "pi", label: "personal", description: "Reads code", tools: "full" },
+        delivery_mode: null,
+        brief: "brief",
+        ext_tools: extTools,
+      },
+    }));
+    await r.pi.sessionStart();
+    await r.waitRegistered();
+    return r;
+  }
+
+  test("tools from the register reply are added as native tools after startup", TEST_TIMEOUT, async () => {
+    const r = await rigWithTools([BOARD_LIST]);
+    const tool = r.pi.tool("mz_relay_board_list");
+    assert.equal(tool.description, BOARD_LIST.description);
+    assert.deepEqual(tool.parameters, BOARD_LIST.inputSchema);
+  });
+
+  test("a call goes to ext_call with the tool name, its arguments and the token", TEST_TIMEOUT, async () => {
+    const r = await rigWithTools([BOARD_LIST]);
+    r.fakeRelayd.onOp("ext_call", () => ({ result: { text: "web-1 open: fix login" } }));
+
+    const result = await r.pi.tool("mz_relay_board_list").execute("call-1", { project: "web" });
+
+    assert.deepEqual(result, textResult("web-1 open: fix login"));
+    const call = await r.fakeRelayd.waitFor("ext_call");
+    assert.deepEqual(call.args, { tool: "board_list", args: { project: "web" }, token: FAKE_TOKEN });
+  });
+
+  test("without ext_tools only the four relay tools exist", TEST_TIMEOUT, async () => {
+    const r = await registeredRig("peers", "nobody online");
+    assert.deepEqual(r.pi.tools.map((t) => t.name).sort(), TOOL_NAMES);
+  });
+
+  test("a malformed entry is skipped and the rest are added", TEST_TIMEOUT, async () => {
+    const r = await rigWithTools([{ name: "board_get" }, BOARD_LIST]);
+    assert.deepEqual(r.pi.tools.map((t) => t.name).filter((n) => !TOOL_NAMES.includes(n)), ["mz_relay_board_list"]);
+  });
+});

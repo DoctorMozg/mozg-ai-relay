@@ -322,9 +322,34 @@ class RelayConnection {
   }
 }
 
+interface ExtToolSpec {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
 interface Registration {
   token: string;
   brief: string;
+  extTools: ExtToolSpec[];
+}
+
+// relayd sends ext_tools only when extensions are enabled; a malformed entry is skipped, never fatal.
+function extToolSpecs(raw: unknown, log: AdapterLog): ExtToolSpec[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    log.warn("relayd's ext_tools is not a list; no extension tools");
+    return [];
+  }
+  const specs: ExtToolSpec[] = [];
+  for (const entry of raw) {
+    if (isRecord(entry) && typeof entry.name === "string" && typeof entry.description === "string" && isRecord(entry.inputSchema)) {
+      specs.push({ name: entry.name, description: entry.description, inputSchema: entry.inputSchema });
+    } else {
+      log.warn("skipping a malformed extension tool from relayd");
+    }
+  }
+  return specs;
 }
 
 function backoffSchedule(env: Record<string, string | undefined>): number[] {
@@ -353,6 +378,7 @@ function installedBin(path: string, log: AdapterLog): string | null {
 // The kept-open hello + register connection that makes this Pi session online in relayd.
 class Presence {
   registration: Registration | null = null;
+  onRegistered: ((registration: Registration) => void) | null = null;
   readonly paths: RelayPaths;
   readonly log: AdapterLog;
   readonly registerArgs: Record<string, unknown>;
@@ -409,7 +435,8 @@ class Presence {
       if (typeof result.token !== "string" || typeof result.brief !== "string") {
         throw new Error("relayd's register result has no token or brief");
       }
-      this.registration = { token: result.token, brief: result.brief };
+      this.registration = { token: result.token, brief: result.brief, extTools: extToolSpecs(result.ext_tools, this.log) };
+      this.onRegistered?.(this.registration);
       this.failures = 0;
       this.spawnTried = false;
       this.refusalsLogged.clear();
@@ -643,6 +670,7 @@ function textResult(text: string): ToolResult {
 class RelayTools {
   readonly session: () => ToolSession | null;
   readonly log: () => AdapterLog | null;
+  private readonly extensionTools = new Set<string>();
 
   constructor(session: () => ToolSession | null, log: () => AdapterLog | null) {
     this.session = session;
@@ -726,6 +754,23 @@ class RelayTools {
     );
   }
 
+  // Pi takes tools after startup too (docs: refreshed in the same session); each is added once.
+  registerExtensions(pi: PiApi, specs: ExtToolSpec[]): void {
+    const added: string[] = [];
+    for (const spec of specs) {
+      if (this.extensionTools.has(spec.name)) continue;
+      this.extensionTools.add(spec.name);
+      pi.registerTool(
+        this.tool(`mz_relay_${spec.name}`, `mz-relay ${spec.name}`, spec.description, spec.inputSchema, "ext_call", (params) => ({
+          tool: spec.name,
+          args: params,
+        })),
+      );
+      added.push(spec.name);
+    }
+    if (added.length > 0) this.log()?.info(`registered extension tools: ${added.join(", ")}`);
+  }
+
   private tool(
     name: string,
     label: string,
@@ -778,6 +823,7 @@ class MzRelayExtension {
   readonly gate: ReadOnlyGate;
   presence: Presence | null = null;
   server: AdapterServer | null = null;
+  private tools: RelayTools | null = null;
   private disabled = false;
 
   constructor(pi: PiApi) {
@@ -800,6 +846,7 @@ class MzRelayExtension {
       () => this.log,
     );
     tools.register(this.pi);
+    this.tools = tools;
     this.pi.on("session_start", () => this.start());
     this.pi.on("session_shutdown", () => this.shutdown());
     this.pi.on("context", (e) => {
@@ -857,6 +904,7 @@ class MzRelayExtension {
         pid: process.pid,
         delivery,
       });
+      this.presence.onRegistered = (registration) => this.tools?.registerExtensions(this.pi, registration.extTools);
       this.presence.start();
     } catch (err) {
       log.error(`session_start failed: ${errorText(err)}`);
