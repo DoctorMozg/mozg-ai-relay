@@ -4,6 +4,7 @@ a tools-only peer, and one Store reader for the rows the tests wait on."""
 from __future__ import annotations
 
 import os
+import secrets
 import shlex
 import subprocess
 import time
@@ -24,6 +25,13 @@ TURN_S = 240.0
 # A peer turn that would touch a file has done so well within this window.
 SETTLE_S = 60.0
 POLL_S = 0.5
+BOARD_EXTENSION = '\n[extensions]\nenabled = ["board"]\n'
+BOARD_PROJECT = "live"
+# The task's marker is reachable only through the board tool, so a reply with it proves the call.
+BOARD_ASK = (
+    f"Use the mz-relay board_list tool on project {BOARD_PROJECT}, then send architect "
+    "the exact title of the task there, with kind inform."
+)
 ARRIVED = frozenset({Status.DELIVERED, Status.ACKED})
 TMUX_TIMEOUT_S = 30.0
 DELETE_TIMEOUT_S = 60.0
@@ -173,6 +181,21 @@ class Architect:
         args = {"token": self._token, "id": msg_id, "to": self._target, "kind": kind, "body": body}
         self._client.call("send", args)
         return msg_id
+
+    def seed_board(self) -> str:
+        """Creates project `live`, readable by all, and posts one task; returns the fresh marker
+        in its title, which a weak model may quote without the rest of the title."""
+        marker = secrets.token_hex(4)
+        title = f"Live task {marker}"
+        human = [
+            ("create_project", {"name": BOARD_PROJECT, "default_access": "read"}),
+            ("set_access", {"project": BOARD_PROJECT, "agent": "architect", "access": "write"}),
+        ]
+        for action, args in human:
+            self._client.call("ext_human", {"ext": "board", "action": action, "args": args})
+        task = {"project": BOARD_PROJECT, "title": title, "body": "-", "acceptance": "-"}
+        self._client.call("ext_call", {"token": self._token, "tool": "board_post", "args": task})
+        return marker
 
     def __enter__(self) -> Architect:
         return self

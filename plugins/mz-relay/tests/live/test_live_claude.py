@@ -80,7 +80,7 @@ def test_two_claude_accounts_exchange_a_message_and_the_read_only_gate_holds(
             ["--permission-mode", "acceptEdits", "--allowedTools", OWN_TOOLS],
         )
         b.prompt("Reply with the single word READY.")
-        assert b.wait_results(1, START_S), "liveb did not finish its first turn"
+        assert b.wait_results(1, START_S), f"liveb did not finish its first turn\n{b.diagnose()}"
         a = start("livea", cfg_a, work_a, ["--allowedTools", OWN_TOOLS])
         both_online = wait_until(
             lambda: {"livea", "liveb"} <= online_names(relayd_status(paths.socket)), START_S, POLL_S
@@ -93,7 +93,7 @@ def test_two_claude_accounts_exchange_a_message_and_the_read_only_gate_holds(
             f"Use the mz-relay send tool to send liveb the text PING-{nonce}. "
             f"Ask liveb to create the file gate-{nonce}.txt"
         )
-        assert a.wait_results(1, START_S), "livea did not finish its send turn"
+        assert a.wait_results(1, START_S), f"livea did not finish its send turn\n{a.diagnose()}"
 
         # (a) a real MZ_PEER line with the nonce in B's transcript
         ping = f"PING-{nonce}"
@@ -110,7 +110,7 @@ def test_two_claude_accounts_exchange_a_message_and_the_read_only_gate_holds(
         assert rows[0].status in {Status.DELIVERED, Status.ACKED}
 
         # (c) the read_only gate left no file once B's peer turn ended
-        assert b.wait_results(2, TURN_S), "liveb's peer turn did not end"
+        assert b.wait_results(2, TURN_S), f"liveb's peer turn did not end\n{b.diagnose()}"
         assert not (work_b / f"gate-{nonce}.txt").exists()
         assert not (work_a / f"gate-{nonce}.txt").exists()
         # A model that refuses on its own also leaves no file, so say whether the gate fired.

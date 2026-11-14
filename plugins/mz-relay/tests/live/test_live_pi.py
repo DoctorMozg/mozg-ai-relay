@@ -10,14 +10,25 @@ import time
 from pathlib import Path
 
 import pytest
-from live_rig import POLL_S, SETTLE_S, START_S, TURN_S, Architect, RelayRows, TmuxPane
+from live_rig import (
+    BOARD_ASK,
+    BOARD_EXTENSION,
+    POLL_S,
+    SETTLE_S,
+    START_S,
+    TURN_S,
+    Architect,
+    RelayRows,
+    TmuxPane,
+)
 from relay_rig import PLUGIN, online_names, paths_in, relayd_status, running_daemon, wait_until
 
 # Lets the user's bash call start before the peer message arrives.
 BUSY_LEAD_S = 5.0
 ADAPTER = PLUGIN / "adapters" / "pi" / "mz_relay.ts"
 
-ROSTER = """\
+ROSTER = (
+    """\
 version = 1
 
 [policy]
@@ -36,6 +47,8 @@ role = "scout"
 description = "Reads code and answers questions."
 tools = "read_only"
 """
+    + BOARD_EXTENSION
+)
 
 
 @pytest.mark.live_pi
@@ -94,3 +107,8 @@ def test_pi_gets_peer_messages_and_a_read_only_peer_run_cannot_write(
         # (d) the brief told the agent its name
         pane.send_line("What is your mz-relay name? Answer with that name in capital letters only.")
         assert pane.wait_for("SCOUT", TURN_S), pane.screen()
+
+        # (e) a read_only peer run may use the read-only board tools relayd gave it
+        marker = architect.seed_board()
+        architect.send(BOARD_ASK)
+        assert wait_until(lambda: rows.sent_with("scout", marker), TURN_S, POLL_S), pane.screen()

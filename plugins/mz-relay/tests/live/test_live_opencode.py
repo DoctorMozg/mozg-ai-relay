@@ -16,7 +16,17 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
-from live_rig import POLL_S, SETTLE_S, START_S, TURN_S, Architect, RelayRows, TmuxPane
+from live_rig import (
+    BOARD_ASK,
+    BOARD_EXTENSION,
+    POLL_S,
+    SETTLE_S,
+    START_S,
+    TURN_S,
+    Architect,
+    RelayRows,
+    TmuxPane,
+)
 from relay_rig import (
     PLUGIN,
     Message,
@@ -32,7 +42,8 @@ CLI_TIMEOUT_S = 60.0
 TUI_QUIET_S = 3.0
 PEER_AGENT = "mz-relay-peer"
 
-ROSTER = """\
+ROSTER = (
+    """\
 version = 1
 
 [policy]
@@ -51,6 +62,8 @@ role = "helper"
 description = "Answers questions about the project."
 tools = "read_only"
 """
+    + BOARD_EXTENSION
+)
 
 
 class OpencodeCli:
@@ -187,3 +200,8 @@ def test_opencode_gets_peer_messages_in_its_main_session_under_the_peer_agent(
         assert cli.agent_of_message_with(main, f"AFTER-{nonce}") is not None
         for child in cli.child_sessions(main):
             assert cli.agent_of_message_with(child, f"AFTER-{nonce}") is None
+
+        # (d) a read_only peer turn may use the read-only board tools relayd gave it
+        marker = architect.seed_board()
+        architect.send(BOARD_ASK)
+        assert wait_until(lambda: rows.sent_with("helper", marker), TURN_S, POLL_S), pane.screen()

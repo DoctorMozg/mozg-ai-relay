@@ -92,7 +92,9 @@ def test_a_builder_and_a_reviewer_take_a_task_to_done(
             f"Then add a note to project {PROJECT} titled 'Decision {nonce}' with body "
             "'Reviews go to checker.' Reply DONE."
         )
-        assert builder.wait_results(1, TURN_S), "builder did not finish its turn"
+        assert builder.wait_results(1, TURN_S), (
+            f"builder did not finish its turn\n{builder.diagnose()}"
+        )
         task = f"{PROJECT}-1"
         assert board_row(
             paths.state_dir, "SELECT state, assignee FROM tasks WHERE id = ?", task
@@ -105,7 +107,9 @@ def test_a_builder_and_a_reviewer_take_a_task_to_done(
             f"Use the mz-relay board tools: approve task {task} in review. "
             f"Then search the notes of project {PROJECT} and reply with the title you find."
         )
-        assert checker.wait_results(1, TURN_S), "checker did not finish its turn"
+        assert checker.wait_results(1, TURN_S), (
+            f"checker did not finish its turn\n{checker.diagnose()}"
+        )
 
         assert board_row(paths.state_dir, "SELECT state, title FROM tasks WHERE id = ?", task) == (
             "done",

@@ -93,6 +93,18 @@ class StreamJsonClaude:
         with self._changed:
             return any(text in json.dumps(event) for event in self.events)
 
+    def diagnose(self, events: int = 8) -> str:
+        """Exit code, the last stream events by type and the stderr tail, for a failed wait."""
+        with self._changed:
+            tail = [f"{e.get('type')}/{e.get('subtype', '')}" for e in self.events[-events:]]
+            count = len(self.events)
+        self._log.flush()
+        stderr = Path(self._log.name).read_text(encoding="utf-8", errors="replace")[-2000:]
+        return (
+            f"exit={self.proc.poll()} events={count} last={tail}\n"
+            f"stderr tail:\n{stderr or '(empty)'}"
+        )
+
     def close(self) -> None:
         try:
             reap(self.proc)

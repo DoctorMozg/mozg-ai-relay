@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 from live_rig import (
+    BOARD_ASK,
+    BOARD_EXTENSION,
     POLL_S,
     START_S,
     TURN_S,
@@ -47,7 +49,8 @@ def configured_name(codex_home: Path) -> str:
 
 
 def live_roster(name: str, codex_home: Path, thread: str, codex_bin: str) -> str:
-    return f"""\
+    return (
+        f"""\
 version = 1
 
 [policy]
@@ -68,6 +71,8 @@ codex_home = "{codex_home}"
 codex_thread = "{thread}"
 codex_bin = "{codex_bin}"
 """
+        + BOARD_EXTENSION
+    )
 
 
 @pytest.mark.live_codex
@@ -148,3 +153,8 @@ def test_a_peer_message_is_queued_into_a_renamed_codex_thread(
             line for line in rollout.read_text(encoding="utf-8").splitlines() if msg_id in line
         ]
         assert any(HEADER in line for line in lines), f"no rollout line with {HEADER!r}: {lines}"
+
+        # A Codex session reaches the board tools through the same MCP server.
+        marker = architect.seed_board()
+        architect.send(BOARD_ASK)
+        assert wait_until(lambda: rows.sent_with(name, marker), TURN_S, POLL_S), pane.screen()
