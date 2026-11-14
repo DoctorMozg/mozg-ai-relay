@@ -41,7 +41,7 @@ PEER_AGENT = {
 KINDS = pytest.mark.parametrize("kind", ["pi", "opencode"])
 CODEX_COMMENT = (
     '# Paste into <CODEX_HOME>/config.toml of the account that runs "reviewer".'
-    " Start Codex without -c."
+    " After /rename, send the thread one message."
 )
 
 DEFAULT_DEST = {

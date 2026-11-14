@@ -143,7 +143,7 @@ def codex_snippet(bin_path: Path, name: str) -> str:
     _check_snippet_args(bin_path, name)
     return (
         f'# Paste into <CODEX_HOME>/config.toml of the account that runs "{name}".'
-        " Start Codex without -c.\n"
+        " After /rename, send the thread one message.\n"
         f"[mcp_servers.{MCP_SERVER_NAME}]\n"
         f"command = {toml_string(str(bin_path))}\n"
         'args = ["mcp", "--harness", "codex"]\n'
