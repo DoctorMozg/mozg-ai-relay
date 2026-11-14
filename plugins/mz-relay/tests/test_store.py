@@ -41,11 +41,11 @@ class TestOpen:
         with raw(db) as conn:
             assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
 
-    def test_schema_version_is_recorded_as_2(self, store: Store, db: Path) -> None:
+    def test_schema_version_is_recorded_as_3(self, store: Store, db: Path) -> None:
         with raw(db) as conn:
             row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
 
-        assert row == ("2",)
+        assert row == ("3",)
 
     def test_a_context_log_reads_through_the_context_index_without_sorting(
         self, store: Store, db: Path
@@ -83,7 +83,7 @@ class TestOpen:
             index = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'messages_context'"
             ).fetchone()
-        assert version == ("2",)
+        assert version == ("3",)
         assert index == ("messages_context",)
         assert [stored.envelope for stored in logged] == [env]
 
@@ -129,7 +129,7 @@ class TestOpen:
             Store(db)
 
         assert caught.value.code == "store_invalid"
-        assert caught.value.message == "database schema 99 is newer than supported 2"
+        assert caught.value.message == "database schema 99 is newer than supported 3"
 
     def test_a_failing_rollback_does_not_hide_why_the_transaction_failed(
         self, db: Path, monkeypatch: pytest.MonkeyPatch
@@ -143,7 +143,7 @@ class TestOpen:
         with pytest.raises(StoreError) as caught:
             Store(db)
 
-        assert caught.value.message == "database schema 99 is newer than supported 2"
+        assert caught.value.message == "database schema 99 is newer than supported 3"
 
 
 class TestMessages:

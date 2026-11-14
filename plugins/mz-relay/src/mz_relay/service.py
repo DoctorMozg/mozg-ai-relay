@@ -6,6 +6,7 @@ import logging
 import os
 import secrets
 import threading
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,7 +31,14 @@ from mz_relay.paths import Paths
 from mz_relay.policy import ParentFacts, Policy, PolicyFacts, SendRequest
 from mz_relay.protocol import PROTOCOL_VERSION, Request
 from mz_relay.roster import AgentSpec, Harness, Roster, RosterCache, ToolMode
-from mz_relay.store import DuplicateMessage, Registration, StatusChange, Store, StoredMessage
+from mz_relay.store import (
+    DuplicateMessage,
+    Event,
+    Registration,
+    StatusChange,
+    Store,
+    StoredMessage,
+)
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +52,10 @@ WAIT_TIMEOUT_MAX_S = 3600
 WAIT_SLICE_S = 1.0
 PREVIEW_CHARS = 200
 CONTEXT_EXTEND_MAX = 100
+WATCH_TIMEOUT_MAX_S = 60
+WATCH_LIMIT_MAX = 500
+WATCH_LIMIT_DEFAULT = 200
+SEQ_MAX = 2**62
 ACKABLE = frozenset({Status.DELIVERING, Status.HANDED_OFF, Status.DELIVERED, Status.LEASED})
 NOT_YET_DELIVERED = frozenset({Status.QUEUED, Status.FALLBACK, Status.HELD})
 # A parent the recipient never got cannot anchor a reply.
@@ -145,6 +157,9 @@ class _Args:
             raise self._fail(name, f"must be one of {', '.join(sorted(allowed))}, got {value!r}")
         return value
 
+    def optional_integer(self, name: str, low: int, high: int) -> int | None:
+        return None if self._args.get(name) is None else self.integer(name, low, high)
+
     def optional_object(self, name: str) -> dict[str, object] | None:
         value = self._args.get(name)
         if value is None:
@@ -162,6 +177,15 @@ def _kind(value: object) -> str:
 def _status_entry(row: StoredMessage) -> dict[str, object]:
     env = row.envelope
     return {"id": env.id, "to": env.to, "status": row.status.value, "reason": row.reason}
+
+
+def _event_entry(event: Event) -> dict[str, object]:
+    entry: dict[str, object] = {"seq": event.seq, "time": iso_utc(event.at), "kind": event.kind}
+    if event.kind == "presence":
+        entry.update(agent=event.agent, online=event.online)
+    else:
+        entry.update(source=event.source, id=event.id, to=event.recipient, status=event.status)
+    return entry
 
 
 def _preview(body: str) -> str:
@@ -194,6 +218,7 @@ class RelayService:
             "status": self._status,
             "context_extend": self._context_extend,
             "log": self._log,
+            "watch": self._watch,
             "shutdown": self._shutdown,
         }
 
@@ -570,6 +595,29 @@ class RelayService:
                 }
             )
         return {"messages": messages}
+
+    def _watch(self, conn: ConnState, args: _Args) -> dict[str, object]:
+        """Events after since, waiting up to timeout_s for one; no since answers the head seq."""
+        since = args.optional_integer("since", 0, SEQ_MAX)
+        timeout_s = args.integer("timeout_s", 0, WATCH_TIMEOUT_MAX_S, 0)
+        limit = args.integer("limit", 1, WATCH_LIMIT_MAX, WATCH_LIMIT_DEFAULT)
+        store = self._deps.store
+        # Real time, not the injected clock: this bounds how long a socket call blocks.
+        deadline = time.monotonic() + timeout_s
+        while True:
+            generation = store.generation()
+            page = store.events_after(since, limit)
+            remaining = deadline - time.monotonic()
+            if page.events or page.gap or since is None or remaining <= 0:
+                break
+            if self.stop_requested.is_set():
+                break
+            store.wait_commit(generation, min(remaining, WAIT_SLICE_S))
+        return {
+            "events": [_event_entry(event) for event in page.events],
+            "last_seq": page.last_seq,
+            "gap": page.gap,
+        }
 
     def _wait(self, conn: ConnState, args: _Args) -> dict[str, object]:
         roster = self._deps.roster.current()

@@ -18,7 +18,7 @@ from mz_relay.roster import Harness, Label
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 BUSY_TIMEOUT_MS = 5000
 
 CONTEXT_INDEX = "CREATE INDEX IF NOT EXISTS messages_context ON messages(context_id, created_at)"
@@ -45,6 +45,31 @@ MESSAGE_COLUMNS = (
     "source, id, recipient, kind, context_id, in_reply_to, hop, created_at, ttl_s, label, "
     "ack_required, body, status, reason, via, attempts, next_attempt_at, handed_off_at, "
     "lease_until, updated_at"
+)
+EVENTS_KEPT = 10_000
+EVENT_COLUMNS = "seq, at, kind, source, id, recipient, status, agent, online"
+# Triggers fill events inside the writing transaction, so no write path can skip one; no body.
+EVENT_STATEMENTS = (
+    "CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT, at REAL NOT NULL, "
+    "kind TEXT NOT NULL, source TEXT, id TEXT, recipient TEXT, status TEXT, agent TEXT, "
+    "online INTEGER)",
+    "CREATE TRIGGER IF NOT EXISTS events_message_insert AFTER INSERT ON messages BEGIN "
+    "INSERT INTO events(at, kind, source, id, recipient, status) "
+    "VALUES(NEW.created_at, 'message', NEW.source, NEW.id, NEW.recipient, NEW.status); END",
+    "CREATE TRIGGER IF NOT EXISTS events_message_status AFTER UPDATE OF status ON messages "
+    "WHEN NEW.status IS NOT OLD.status BEGIN "
+    "INSERT INTO events(at, kind, source, id, recipient, status) "
+    "VALUES(NEW.updated_at, 'message', NEW.source, NEW.id, NEW.recipient, NEW.status); END",
+    # online is the agent's state over all its registrations, not this one row's.
+    "CREATE TRIGGER IF NOT EXISTS events_presence_insert AFTER INSERT ON registrations "
+    "WHEN NEW.online = 1 BEGIN INSERT INTO events(at, kind, agent, online) "
+    "VALUES(NEW.last_seen, 'presence', NEW.name, 1); END",
+    "CREATE TRIGGER IF NOT EXISTS events_presence_update AFTER UPDATE OF online ON registrations "
+    "WHEN NEW.online IS NOT OLD.online BEGIN INSERT INTO events(at, kind, agent, online) "
+    "VALUES(NEW.last_seen, 'presence', NEW.name, EXISTS(SELECT 1 FROM registrations "
+    "WHERE name = NEW.name AND online = 1)); END",
+    f"CREATE TRIGGER IF NOT EXISTS events_prune AFTER INSERT ON events BEGIN "
+    f"DELETE FROM events WHERE seq <= NEW.seq - {EVENTS_KEPT}; END",
 )
 REGISTRATION_COLUMNS = (
     "token, name, harness, client, delivery_mode, binding, pid, created_at, last_seen, online"
@@ -110,6 +135,29 @@ class Registration:
     created_at: float
     last_seen: float
     online: bool
+
+
+@dataclass(frozen=True)
+class Event:
+    """One change: a message row's status (kind "message") or an agent going on or offline."""
+
+    seq: int
+    at: float
+    kind: str
+    source: str | None
+    id: str | None
+    recipient: str | None
+    status: str | None
+    agent: str | None
+    online: bool | None
+
+
+@dataclass(frozen=True)
+class EventPage:
+    events: list[Event]
+    last_seq: int
+    # True when events after `since` were pruned, so a reader must reload its state.
+    gap: bool
 
 
 class DuplicateMessage(Exception):
@@ -189,6 +237,20 @@ def _message(row: sqlite3.Row) -> StoredMessage:
     )
 
 
+def _event(row: sqlite3.Row) -> Event:
+    return Event(
+        seq=int(row["seq"]),
+        at=float(row["at"]),
+        kind=str(row["kind"]),
+        source=row["source"],
+        id=row["id"],
+        recipient=row["recipient"],
+        status=row["status"],
+        agent=row["agent"],
+        online=None if row["online"] is None else bool(row["online"]),
+    )
+
+
 def _registration(row: sqlite3.Row) -> Registration:
     binding: dict[str, object] | None = None
     if row["binding"] is not None:
@@ -216,6 +278,9 @@ class Store:
     def __init__(self, path: Path) -> None:
         self.path = path
         self._lock = threading.RLock()
+        # Waiters hold only this condition, never _lock, so writers may notify under _lock.
+        self._commits = threading.Condition()
+        self._generation = 0
         try:
             self._conn = sqlite3.connect(
                 path, isolation_level=None, check_same_thread=False, timeout=BUSY_TIMEOUT_MS / 1000
@@ -245,6 +310,8 @@ class Store:
                 for statement in SCHEMA.split(";"):
                     if statement.strip():
                         conn.execute(statement)
+                for statement in EVENT_STATEMENTS:
+                    conn.execute(statement)
                 conn.execute(
                     "INSERT INTO meta(key, value) VALUES('schema_version', ?)",
                     (str(SCHEMA_VERSION),),
@@ -263,8 +330,15 @@ class Store:
                 )
             if version < 2:
                 conn.execute(CONTEXT_INDEX)
-                conn.execute("UPDATE meta SET value = '2' WHERE key = 'schema_version'")
-                log.info("migrated store schema %d to 2 in %s", version, self.path)
+            if version < 3:
+                for statement in EVENT_STATEMENTS:
+                    conn.execute(statement)
+            if version < SCHEMA_VERSION:
+                conn.execute(
+                    "UPDATE meta SET value = ? WHERE key = 'schema_version'",
+                    (str(SCHEMA_VERSION),),
+                )
+                log.info("migrated store schema %d to %d in %s", version, SCHEMA_VERSION, self.path)
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
@@ -273,6 +347,9 @@ class Store:
             try:
                 yield self._conn
                 self._conn.execute("COMMIT")
+                with self._commits:
+                    self._generation += 1
+                    self._commits.notify_all()
             except BaseException:
                 # A failed COMMIT may already have rolled back; a second ROLLBACK would mask it.
                 if self._conn.in_transaction:
@@ -295,6 +372,41 @@ class Store:
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+    def generation(self) -> int:
+        """Counts commits; read it before a query, then wait_commit for the next change."""
+        with self._commits:
+            return self._generation
+
+    def wait_commit(self, generation: int, timeout_s: float) -> int:
+        """Waits until a commit moves past generation or timeout_s passes; the generation now."""
+        if not timeout_s >= 0:
+            raise ValueError(f"timeout_s must be zero or positive, got {timeout_s!r}")
+        with self._commits:
+            self._commits.wait_for(lambda: self._generation != generation, timeout_s)
+            return self._generation
+
+    def events_after(self, since: int | None, limit: int) -> EventPage:
+        """Events with seq above since, oldest first; since None starts at the newest event."""
+        _check_limit(limit)
+        with self._lock:
+            head_row = self._conn.execute("SELECT min(seq), max(seq) FROM events").fetchone()
+            oldest = None if head_row[0] is None else int(head_row[0])
+            newest = 0 if head_row[1] is None else int(head_row[1])
+            if since is None:
+                return EventPage(events=[], last_seq=newest, gap=False)
+            if isinstance(since, bool) or not isinstance(since, int) or since < 0:
+                raise ValueError(f"since must be a non-negative int, got {since!r}")
+            if since > newest:
+                # Only a recreated database counts backwards; the reader restarts at its head.
+                return EventPage(events=[], last_seq=newest, gap=True)
+            rows = self._conn.execute(
+                f"SELECT {EVENT_COLUMNS} FROM events WHERE seq > ? ORDER BY seq LIMIT ?",
+                (since, limit),
+            ).fetchall()
+        events = [_event(row) for row in rows]
+        gap = oldest is not None and since + 1 < oldest
+        return EventPage(events=events, last_seq=events[-1].seq if events else since, gap=gap)
 
     def insert_message(
         self,
