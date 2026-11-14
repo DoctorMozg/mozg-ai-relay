@@ -41,11 +41,51 @@ class TestOpen:
         with raw(db) as conn:
             assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
 
-    def test_schema_version_is_recorded_as_1(self, store: Store, db: Path) -> None:
+    def test_schema_version_is_recorded_as_2(self, store: Store, db: Path) -> None:
         with raw(db) as conn:
             row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
 
-        assert row == ("1",)
+        assert row == ("2",)
+
+    def test_a_context_log_reads_through_the_context_index_without_sorting(
+        self, store: Store, db: Path
+    ) -> None:
+        with raw(db) as conn:
+            plan = conn.execute(
+                "EXPLAIN QUERY PLAN SELECT * FROM messages WHERE context_id = ? "
+                "ORDER BY created_at DESC, rowid DESC LIMIT 5",
+                ("ctx",),
+            ).fetchall()
+
+        details = " | ".join(str(row[-1]) for row in plan)
+        assert "USING INDEX messages_context" in details
+        assert "TEMP B-TREE" not in details
+
+    def test_a_version_1_database_gains_the_context_index_and_keeps_its_rows(
+        self, db: Path
+    ) -> None:
+        first = Store(db)
+        env = envelope(mid(1), context_id=mid(1), at=CREATED)
+        first.insert_message(env, Status.QUEUED, CREATED, next_attempt_at=CREATED)
+        first.close()
+        with raw(db) as conn:
+            conn.execute("DROP INDEX messages_context")
+            conn.execute("UPDATE meta SET value = '1' WHERE key = 'schema_version'")
+
+        second = Store(db)
+        try:
+            logged = second.log(mid(1), 5)
+        finally:
+            second.close()
+
+        with raw(db) as conn:
+            version = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+            index = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'messages_context'"
+            ).fetchone()
+        assert version == ("2",)
+        assert index == ("messages_context",)
+        assert [stored.envelope for stored in logged] == [env]
 
     def test_write_waits_for_a_lock_held_by_another_connection(
         self, store: Store, db: Path
@@ -89,7 +129,7 @@ class TestOpen:
             Store(db)
 
         assert caught.value.code == "store_invalid"
-        assert caught.value.message == "database schema 99 is newer than supported 1"
+        assert caught.value.message == "database schema 99 is newer than supported 2"
 
     def test_a_failing_rollback_does_not_hide_why_the_transaction_failed(
         self, db: Path, monkeypatch: pytest.MonkeyPatch
@@ -103,7 +143,7 @@ class TestOpen:
         with pytest.raises(StoreError) as caught:
             Store(db)
 
-        assert caught.value.message == "database schema 99 is newer than supported 1"
+        assert caught.value.message == "database schema 99 is newer than supported 2"
 
 
 class TestMessages:

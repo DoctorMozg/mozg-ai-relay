@@ -18,10 +18,12 @@ from mz_relay.roster import Harness, Label
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 BUSY_TIMEOUT_MS = 5000
 
-SCHEMA = """
+CONTEXT_INDEX = "CREATE INDEX IF NOT EXISTS messages_context ON messages(context_id, created_at)"
+
+SCHEMA = f"""
 CREATE TABLE messages(source TEXT NOT NULL, id TEXT NOT NULL, recipient TEXT NOT NULL,
   kind TEXT NOT NULL, context_id TEXT NOT NULL, in_reply_to TEXT, hop INTEGER NOT NULL,
   created_at REAL NOT NULL, ttl_s INTEGER NOT NULL, label TEXT NOT NULL,
@@ -31,6 +33,7 @@ CREATE TABLE messages(source TEXT NOT NULL, id TEXT NOT NULL, recipient TEXT NOT
 CREATE INDEX messages_id ON messages(id);
 CREATE INDEX messages_recipient_status ON messages(recipient, status);
 CREATE INDEX messages_due ON messages(status, next_attempt_at);
+{CONTEXT_INDEX};
 CREATE TABLE contexts(context_id TEXT PRIMARY KEY, turns INTEGER NOT NULL, turn_cap INTEGER,
   closed_at REAL, closed_by TEXT);
 CREATE TABLE registrations(token TEXT PRIMARY KEY, name TEXT NOT NULL, harness TEXT NOT NULL,
@@ -258,6 +261,10 @@ class Store:
                 raise StoreError(
                     f"database schema {version} is newer than supported {SCHEMA_VERSION}"
                 )
+            if version < 2:
+                conn.execute(CONTEXT_INDEX)
+                conn.execute("UPDATE meta SET value = '2' WHERE key = 'schema_version'")
+                log.info("migrated store schema %d to 2 in %s", version, self.path)
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:

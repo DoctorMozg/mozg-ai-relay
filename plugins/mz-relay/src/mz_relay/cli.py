@@ -52,8 +52,19 @@ REFUSAL = "approve, deny and context extend must be run by the user in a termina
 LIST_PREVIEW_CHARS = 60
 CONTEXT_EXTEND_BY = 20
 YES = frozenset({"y", "yes"})
-# C0 (but newline), DEL and C1 could move the cursor or rewrite the route line; U+FFFD shows them.
-UNSAFE_CHARS = {code: "\ufffd" for code in (*range(0x20), 0x7F, *range(0x80, 0xA0)) if code != 0x0A}
+# C0 (but newline), DEL, C1, line separators and bidi controls could move the cursor or
+# reorder the route line; U+FFFD shows them.
+UNSAFE_CODES = (
+    *range(0x20),
+    0x7F,
+    *range(0x80, 0xA0),
+    0x061C,
+    0x200E,
+    0x200F,
+    *range(0x2028, 0x202F),
+    *range(0x2066, 0x206A),
+)
+UNSAFE_CHARS = {code: "\ufffd" for code in UNSAFE_CODES if code != 0x0A}
 
 
 @dataclass(frozen=True)
@@ -120,6 +131,12 @@ def _log_limit(raw: str) -> int:
     return value
 
 
+def _context_id(raw: str) -> str:
+    if not raw:
+        raise argparse.ArgumentTypeError("must be a non-empty context id")
+    return raw
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROG, description="Message agents in other harnesses by roster name."
@@ -156,7 +173,9 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("peers", help="list the roster agents and whether they are online")
     commands.add_parser("held", help="list messages held for your approval")
     log_cmd = commands.add_parser("log", help="list recent messages, oldest first")
-    log_cmd.add_argument("--context", default=None, metavar="C", help="only this context's rows")
+    log_cmd.add_argument(
+        "--context", type=_context_id, default=None, metavar="C", help="only this context's rows"
+    )
     log_cmd.add_argument(
         "--limit",
         type=_log_limit,
@@ -257,7 +276,7 @@ def _ensure(paths: Paths) -> int:
 
 
 def _install(paths: Paths, kind: str, dest: str | None, *, force: bool) -> int:
-    installer = Installer(paths, plugin_root=PLUGIN_DIR)
+    installer = Installer(paths, plugin_root=PLUGIN_DIR, env=os.environ)
     install = installer.pi if kind == "pi" else installer.opencode
     try:
         target = None if dest is None else paths.expand(dest).absolute()

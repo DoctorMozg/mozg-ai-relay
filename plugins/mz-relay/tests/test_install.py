@@ -81,7 +81,7 @@ def plugin_root(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def installer(relay_paths: Paths, plugin_root: Path) -> Installer:
-    return Installer(relay_paths, plugin_root=plugin_root)
+    return Installer(relay_paths, plugin_root=plugin_root, env={})
 
 
 def install_of(installer: Installer, kind: str) -> Install:
@@ -113,6 +113,36 @@ class TestDefaultDest:
         assert plan.dest == expected
         assert expected.read_text(encoding="utf-8") == SOURCES[kind]
         assert list(decoy.iterdir()) == []
+
+
+class TestXdgConfigHome:
+    def test_opencode_installs_under_an_absolute_xdg_config_home(
+        self, relay_paths: Paths, plugin_root: Path, tmp_path: Path
+    ) -> None:
+        config_home = tmp_path / "xdg"
+        installer = Installer(
+            relay_paths, plugin_root=plugin_root, env={"XDG_CONFIG_HOME": str(config_home)}
+        )
+
+        plan = installer.opencode()
+
+        assert plan.dest == config_home / "opencode" / "plugins" / "mz-relay.ts"
+        assert plan.dest.read_text(encoding="utf-8") == OC_SOURCE
+
+    def test_a_relative_xdg_config_home_is_ignored(
+        self, relay_paths: Paths, plugin_root: Path
+    ) -> None:
+        installer = Installer(relay_paths, plugin_root=plugin_root, env={"XDG_CONFIG_HOME": "rel"})
+
+        assert installer.opencode().dest == relay_paths.pw_home / DEFAULT_DEST["opencode"]
+
+    def test_pi_ignores_xdg_config_home(
+        self, relay_paths: Paths, plugin_root: Path, tmp_path: Path
+    ) -> None:
+        env = {"XDG_CONFIG_HOME": str(tmp_path / "xdg")}
+        installer = Installer(relay_paths, plugin_root=plugin_root, env=env)
+
+        assert installer.pi().dest == relay_paths.pw_home / DEFAULT_DEST["pi"]
 
 
 class TestCopy:
@@ -228,7 +258,7 @@ class TestRealPluginRoot:
     ) -> None:
         dest = tmp_path / "adapter.ts"
 
-        plan = install_of(Installer(relay_paths, plugin_root=PLUGIN), kind)(dest)
+        plan = install_of(Installer(relay_paths, plugin_root=PLUGIN, env={}), kind)(dest)
 
         assert plan.source == PLUGIN / "adapters" / kind / "mz_relay.ts"
         assert plan.bin == BIN
@@ -340,6 +370,27 @@ class TestCli:
         assert capsys.readouterr().out == f"installed {dest}\n"
         assert dest.read_bytes() == (PLUGIN / "adapters" / kind / "mz_relay.ts").read_bytes()
         assert record_of(relay_paths) == {"bin": str(BIN), "version": __version__}
+
+    def test_install_opencode_without_dest_follows_xdg_config_home(
+        self,
+        relay_paths: Paths,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # A decoy passwd home keeps a broken lookup out of the real ~/.config.
+        decoy = tmp_path / "decoy-home"
+        decoy.mkdir()
+        monkeypatch.setattr("mz_relay.cli.user_home", lambda: decoy)
+        config_home = tmp_path / "xdg"
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+
+        code = main(["install", "opencode"])
+
+        dest = config_home / "opencode" / "plugins" / "mz-relay.ts"
+        assert code == 0
+        assert capsys.readouterr().out == f"installed {dest}\n"
+        assert list(decoy.iterdir()) == []
 
     def test_install_over_a_foreign_file_exits_2_and_keeps_it(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

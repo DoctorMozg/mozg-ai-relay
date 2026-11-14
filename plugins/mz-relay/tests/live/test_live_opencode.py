@@ -111,7 +111,8 @@ def test_opencode_gets_peer_messages_in_its_main_session_under_the_peer_agent(
     paths = paths_in(relay_home)
     project = relay_home / "project"
     project.mkdir()
-    Installer(paths, plugin_root=PLUGIN).opencode(project / ".opencode" / "plugins" / "mz-relay.ts")
+    installer = Installer(paths, plugin_root=PLUGIN, env={})
+    installer.opencode(project / ".opencode" / "plugins" / "mz-relay.ts")
     env = {**relay_env, "MZ_RELAY_NAME": "helper"}
     cli = OpencodeCli(live_opencode_argv[0], project, env)
     ctx = AdapterContext(paths=paths, clock=SystemClock(), pw_home=paths.pw_home, base_env={})

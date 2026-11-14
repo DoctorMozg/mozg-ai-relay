@@ -154,7 +154,7 @@ Copies `adapters/pi/mz_relay.ts` to `~/.pi/agent/extensions/mz-relay/index.ts` a
 mz-relay install opencode [--dest FILE] [--force]
 ```
 
-Copies `adapters/opencode/mz_relay.ts` to `~/.config/opencode/plugins/mz-relay.ts`. The plugin injects the MCP entry and the read-only `mz-relay-peer` agent through OpenCode's `config` hook. Whether OpenCode applies that hook is UNTESTED. The fallback is to merge the printed entries into `opencode.json` by hand:
+Copies `adapters/opencode/mz_relay.ts` to `~/.config/opencode/plugins/mz-relay.ts`, or under `$XDG_CONFIG_HOME/opencode/` when that is set. The plugin injects the MCP entry and the read-only `mz-relay-peer` agent through OpenCode's `config` hook. Whether OpenCode applies that hook is UNTESTED. The fallback is to merge the printed entries into `opencode.json` by hand:
 
 ```bash
 mz-relay snippet opencode --name helper

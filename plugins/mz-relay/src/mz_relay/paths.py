@@ -163,11 +163,15 @@ def expand_home(raw: str, pw_home: Path) -> Path:
     return Path(raw)
 
 
-def _xdg_dir(env: Mapping[str, str], variable: str, fallback: Path) -> Path:
+def xdg_base(env: Mapping[str, str], variable: str, fallback: Path) -> Path:
+    """The XDG base dir in `variable`, or `fallback` when it is unset or relative."""
     # The XDG spec says relative values are invalid and must be ignored.
     value = env.get(variable)
-    base = Path(value) if value and Path(value).is_absolute() else fallback
-    return base / APP
+    return Path(value) if value and Path(value).is_absolute() else fallback
+
+
+def _xdg_dir(env: Mapping[str, str], variable: str, fallback: Path) -> Path:
+    return xdg_base(env, variable, fallback) / APP
 
 
 def _runtime_dir(env: Mapping[str, str], uid: int, run_user_exists: Callable[[Path], bool]) -> Path:

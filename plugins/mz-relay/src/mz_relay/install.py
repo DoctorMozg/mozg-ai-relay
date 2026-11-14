@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
 from mz_relay import __version__
 from mz_relay.errors import PathError, RelayError
-from mz_relay.paths import Paths
+from mz_relay.paths import Paths, xdg_base
 from mz_relay.roster import NAME_RE
 
 log = logging.getLogger(__name__)
@@ -43,20 +44,22 @@ def plugin_bin(plugin_root: Path) -> Path:
 class Installer:
     """Copies an adapter from the plugin into the harness and records the plugin's bin."""
 
-    def __init__(self, paths: Paths, *, plugin_root: Path) -> None:
+    def __init__(self, paths: Paths, *, plugin_root: Path, env: Mapping[str, str]) -> None:
         if not isinstance(paths, Paths):
             raise ValueError(f"paths must be a Paths, got {type(paths).__name__}")
         if not plugin_root.is_absolute():
             raise ValueError(f"plugin_root must be absolute, got {plugin_root}")
         self._paths = paths
         self._root = plugin_root
+        # OpenCode reads its global config from XDG_CONFIG_HOME; Pi has a fixed ~/.pi.
+        self._config_home = xdg_base(env, "XDG_CONFIG_HOME", paths.pw_home / ".config")
 
     def pi(self, dest: Path | None = None, *, force: bool = False) -> InstallPlan:
         default = self._paths.pw_home / ".pi" / "agent" / "extensions" / "mz-relay" / "index.ts"
         return self._install("pi", dest or default, force=force)
 
     def opencode(self, dest: Path | None = None, *, force: bool = False) -> InstallPlan:
-        default = self._paths.pw_home / ".config" / "opencode" / "plugins" / "mz-relay.ts"
+        default = self._config_home / "opencode" / "plugins" / "mz-relay.ts"
         return self._install("opencode", dest or default, force=force)
 
     def _install(self, kind: str, dest: Path, *, force: bool) -> InstallPlan:

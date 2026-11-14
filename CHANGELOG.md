@@ -4,6 +4,16 @@ All notable changes are listed here. The format follows Keep a Changelog, and ve
 
 ## [Unreleased]
 
+### Fixed
+
+- `mz-relay held`, `approve`, `deny` and `log` show line separators (U+2028, U+2029) and bidi controls in peer text as U+FFFD, like other control characters.
+- `mz-relay log --context ""` is a usage error (exit 2) instead of a relayd error (exit 1).
+- `mz-relay install opencode` installs under `$XDG_CONFIG_HOME/opencode/` when that is set, where OpenCode looks for it.
+
+### Changed
+
+- Store schema 2 adds an index on `messages(context_id, created_at)` for `log --context`; a schema 1 database is migrated when relayd opens it.
+
 ## [0.1.0] - 2026-11-14
 
 ### Added

@@ -676,6 +676,18 @@ CONTROLS = [
     "\x9b",
     "\x9f",
 ]
+# Line separators and bidi controls that could reorder or split what the terminal shows.
+LINE_AND_BIDI = [
+    "\u061c",
+    "\u200e",
+    "\u200f",
+    "\u2028",
+    "\u2029",
+    "\u202a",
+    "\u202e",
+    "\u2066",
+    "\u2069",
+]
 
 
 def holding(preview: str) -> Reply:
@@ -734,6 +746,12 @@ class TestPreviewControlChars:
     ) -> None:
         assert held_line(f"a{char}b")[3:] == ["a\ufffdb"]
 
+    @pytest.mark.parametrize("char", LINE_AND_BIDI, ids=[f"{ord(c):#06x}" for c in LINE_AND_BIDI])
+    def test_held_replaces_each_line_separator_and_bidi_control(
+        self, held_line: Callable[[str], list[str]], char: str
+    ) -> None:
+        assert held_line(f"a{char}b")[3:] == ["a\ufffdb"]
+
     def test_held_still_flattens_crlf_to_one_space(
         self, held_line: Callable[[str], list[str]]
     ) -> None:
@@ -753,6 +771,12 @@ class TestPreviewControlChars:
 
     @pytest.mark.parametrize("char", CONTROLS, ids=[f"{ord(c):#04x}" for c in CONTROLS])
     def test_approve_replaces_each_c0_del_and_c1_char(
+        self, approve_lines: Callable[[str], list[str]], char: str
+    ) -> None:
+        assert approve_lines(f"a{char}b")[1] == "a\ufffdb"
+
+    @pytest.mark.parametrize("char", LINE_AND_BIDI, ids=[f"{ord(c):#06x}" for c in LINE_AND_BIDI])
+    def test_approve_replaces_each_line_separator_and_bidi_control(
         self, approve_lines: Callable[[str], list[str]], char: str
     ) -> None:
         assert approve_lines(f"a{char}b")[1] == "a\ufffdb"
@@ -892,6 +916,18 @@ class TestLog:
 
         assert usage.value.code == 2
         assert "--limit" in capsys.readouterr().err
+        assert server.ops() == []
+
+    def test_an_empty_context_is_a_usage_error_and_nothing_is_sent(
+        self, cli_paths: Paths, fake_relayd: Serve, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        server = fake_relayd(serving_log())
+
+        with pytest.raises(SystemExit) as usage:
+            main(["log", "--context", ""])
+
+        assert usage.value.code == 2
+        assert "--context" in capsys.readouterr().err
         assert server.ops() == []
 
     def test_an_agent_session_may_read_the_log(
