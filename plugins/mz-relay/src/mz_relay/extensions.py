@@ -69,6 +69,8 @@ class ExtTool:
 class HumanAction:
     name: str
     handler: Callable[[HumanCall], dict[str, object]]
+    # Reads leave no event, so a UI that reloads on events does not loop.
+    mutates: bool = True
 
 
 class Extension(Protocol):
@@ -170,6 +172,14 @@ class Extensions:
                     }
                 )
         return listed
+
+    def mutates(self, full_name: str) -> bool:
+        return self._tool(full_name)[1].mutates
+
+    def human_mutates(self, ext_name: str, action_name: str) -> bool:
+        loaded = self._loaded.get(ext_name)
+        action = None if loaded is None else loaded.actions.get(action_name)
+        return action is not None and action.mutates
 
     def call(
         self, caller: AgentSpec, full_name: str, args: Mapping[str, object], now: float

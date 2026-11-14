@@ -9,6 +9,7 @@ from functools import partial
 from pathlib import Path
 
 import pytest
+from mz_relay.cli import Terminal, main
 from mz_relay.client import RelayClient
 from mz_relay.errors import RelayError
 from mz_relay.ext import board
@@ -312,3 +313,97 @@ class TestInRelayd:
         assert [t["name"] for t in tools][:2] == ["board_list", "board_get"]
         assert posted["id"] == "web-1"
         assert (relay_paths.state_dir / "ext" / "board.db").exists()
+
+
+class TestUserViews:
+    def test_overview_shows_every_project_grant_and_task_and_records_no_event(
+        self, b: BoardRig
+    ) -> None:
+        b.human("create_project", name="corp", default_access="none")
+        b.human("set_access", project="corp", agent="bob", access="write")
+        first = b.post()
+        b.post(depends_on=[first])
+        head = b.rig.call(b.rig.hello(client="cli"), "watch")["last_seq"]
+
+        cli = b.rig.hello(client="cli")
+        view = b.rig.call(cli, "ext_human", ext="board", action="overview")
+
+        projects = {p["name"]: p for p in view["projects"]}
+        assert projects["corp"]["grants"] == {"bob": "write"}
+        assert [(t["id"], t["ready"]) for t in view["tasks"]] == [("web-1", True), ("web-2", False)]
+        assert b.rig.call(cli, "watch")["last_seq"] == head
+
+    def test_task_shows_body_dependencies_and_every_event(self, b: BoardRig) -> None:
+        first = b.post()
+        second = b.post(depends_on=[first])
+        b.tool("bob", "claim", id=first)
+
+        cli = b.rig.hello(client="cli")
+        view = b.rig.call(cli, "ext_human", ext="board", action="task", args={"id": second})
+        claimed = b.rig.call(cli, "ext_human", ext="board", action="task", args={"id": first})
+
+        assert view["task"]["body"] == TASK["body"]
+        assert view["deps"] == [{"id": first, "state": "in_progress"}]
+        assert [e["kind"] for e in claimed["events"]] == ["posted", "claimed"]
+
+    def test_a_change_is_an_ext_event_on_the_feed(self, b: BoardRig) -> None:
+        head = b.rig.call(b.rig.hello(client="cli"), "watch")["last_seq"]
+
+        b.post("bob")
+
+        events = b.rig.call(b.rig.hello(client="cli"), "watch", since=head)["events"]
+        changes = [(e["ext"], e["agent"]) for e in events if e["kind"] == "ext"]
+        assert changes == [("board", "bob")]
+
+
+class TestBoardCommand:
+    @pytest.fixture
+    def board_relayd(self, relay_paths: Paths, agent_free_env: dict[str, str]) -> Iterator[Paths]:
+        roster = pull_roster(relay_paths.config_dir) + '\n[extensions]\nenabled = ["board"]\n'
+        with running_daemon(relay_paths, roster_text=roster):
+            yield relay_paths
+
+    def run(self, *argv: str, env: dict[str, str] | None = None) -> int:
+        terminal = Terminal(isatty=lambda: True, ask=lambda _: "", env=env or {})
+        return main(["board", *argv], terminal=terminal)
+
+    def test_actions_take_key_value_pairs_and_print_the_result(
+        self, board_relayd: Paths, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert self.run("create_project", "name=web", "default_access=write") == 0
+        assert self.run("overview") == 0
+
+        out = capsys.readouterr().out
+        assert "created project web, default access write" in out
+        assert "1 projects, 0 tasks" in out
+
+    def test_json_values_keep_their_type(
+        self, board_relayd: Paths, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        self.run("create_project", "name=web", "default_access=write")
+        with closing(RelayClient(board_relayd.socket)) as agent:
+            agent.connect(client="mcp")
+            reg = agent.call(
+                "register",
+                {
+                    "name": "bob",
+                    "harness": "opencode",
+                    "cwd": str(board_relayd.config_dir),
+                    "pid": 1,
+                },
+            )
+            call = {"token": reg["token"], "tool": "board_post", "args": {"project": "web", **TASK}}
+            agent.call("ext_call", call)
+
+        assert self.run("reprioritize", "id=web-1", "priority=7") == 0
+        self.run("overview")
+        assert "web-1  open  p7  Fix login" in capsys.readouterr().out
+
+    def test_an_agent_session_is_refused(self, board_relayd: Paths) -> None:
+        assert self.run("overview", env={"CODEX_THREAD_ID": "t1"}) == 2
+
+    def test_a_pair_without_an_equals_sign_is_a_usage_error(self) -> None:
+        with pytest.raises(SystemExit) as caught:
+            self.run("approve", "web-1")
+
+        assert caught.value.code == 2

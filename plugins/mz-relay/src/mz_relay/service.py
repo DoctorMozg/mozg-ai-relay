@@ -185,6 +185,8 @@ def _event_entry(event: Event) -> dict[str, object]:
     entry: dict[str, object] = {"seq": event.seq, "time": iso_utc(event.at), "kind": event.kind}
     if event.kind == "presence":
         entry.update(agent=event.agent, online=event.online)
+    elif event.kind == "ext":
+        entry.update(ext=event.source, agent=event.agent)
     else:
         entry.update(source=event.source, id=event.id, to=event.recipient, status=event.status)
     return entry
@@ -652,20 +654,22 @@ class RelayService:
     def _ext_call(self, conn: ConnState, args: _Args) -> dict[str, object]:
         me = self._caller(self._deps.roster.current(), args)
         tool = args.text("tool")
-        result = self._deps.extensions.call(me, tool, _object(args, "args"), self._deps.clock.now())
+        extensions, now = self._deps.extensions, self._deps.clock.now()
+        result = extensions.call(me, tool, _object(args, "args"), now)
         log.info("%s called %s", me.name, tool)
-        self._notify()
+        if extensions.mutates(tool):
+            self._deps.store.record_ext_change(tool.partition("_")[0], me.name, now)
         return result
 
     def _ext_human(self, conn: ConnState, args: _Args) -> dict[str, object]:
         # Human actions can mean approval, so only the user's CLI or UI reaches them.
         _require_cli(conn, "ext_human")
         ext, action = args.text("ext"), args.text("action")
-        result = self._deps.extensions.human(
-            ext, action, _object(args, "args"), self._deps.clock.now()
-        )
+        extensions, now = self._deps.extensions, self._deps.clock.now()
+        result = extensions.human(ext, action, _object(args, "args"), now)
         log.info("user ran %s.%s", ext, action)
-        self._notify()
+        if extensions.human_mutates(ext, action):
+            self._deps.store.record_ext_change(ext, USER_NAME, now)
         return result
 
     def _watch(self, conn: ConnState, args: _Args) -> dict[str, object]:
@@ -745,6 +749,7 @@ class RelayService:
             "protocol": PROTOCOL_VERSION,
             "version": self._deps.version,
             "connections": connections,
+            "extensions": self._deps.extensions.names(),
             "db": str(self._deps.paths.db),
             "roster": str(self._deps.paths.roster),
             "agents": [

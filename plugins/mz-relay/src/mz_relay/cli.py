@@ -56,6 +56,7 @@ AGENT_ENV_MARKERS = (
 SOURCE_HELP = "the sender, when held messages from several senders share the id"
 REFUSAL = "approve, deny and context extend must be run by the user in a terminal, not by an agent"
 USER_REFUSAL = "send, inbox and ack act as the user and must be run in a terminal, not by an agent"
+EXT_REFUSAL = "board actions are the user's and must be run in a terminal, not by an agent"
 UI_REFUSAL = "ui acts as the user and must be run in a terminal, not by an agent"
 PORT_MAX = 65_535
 SEND_KINDS = ("request", "inform", "reply", "done")
@@ -170,6 +171,16 @@ def _port(raw: str) -> int:
     return int(raw)
 
 
+def _pair(raw: str) -> tuple[str, object]:
+    key, sep, value = raw.partition("=")
+    if not sep or not key:
+        raise argparse.ArgumentTypeError(f"expected KEY=VALUE, got {raw!r}")
+    try:
+        return key, json.loads(value)
+    except ValueError:
+        return key, value
+
+
 def _context_id(raw: str) -> str:
     if not raw:
         raise argparse.ArgumentTypeError("must be a non-empty context id")
@@ -267,6 +278,11 @@ def build_parser() -> argparse.ArgumentParser:
     snippet.add_argument("kind", choices=["opencode", "codex"])
     snippet.add_argument("--name", required=True, metavar="N", help="the agent's roster name")
     commands.add_parser("doctor", help="check the setup without starting relayd")
+    board = commands.add_parser("board", help="run a board action as the user")
+    board.add_argument("action", help="e.g. overview, create_project, set_access, approve")
+    board.add_argument(
+        "pairs", nargs="*", type=_pair, metavar="KEY=VALUE", help="a JSON value, or plain text"
+    )
     ui = commands.add_parser("ui", help="serve the web UI on 127.0.0.1 until Ctrl-C")
     ui.add_argument("--port", type=_port, default=0, metavar="N", help="default: a free port")
     ui.add_argument("--no-open", action="store_true", help="print the address, open no browser")
@@ -331,6 +347,8 @@ def main(argv: Sequence[str] | None = None, *, terminal: Terminal | None = None)
         return user.inbox(args.limit, terminal or user_terminal())
     if args.command == "ack":
         return user.ack(args.id, terminal or user_terminal())
+    if args.command == "board":
+        return user.ext_action("board", args.action, dict(args.pairs), terminal or user_terminal())
     if args.command == "ui":
         return user.ui(args.port, terminal or user_terminal(), open_browser=not args.no_open)
     parser.error(f"unhandled command {args.command!r}")
@@ -592,6 +610,28 @@ class UserCommands:
             except RelayError as exc:
                 return _fail(exc, EXIT_ERROR)
         sys.stdout.write(f"acked {msg_id}\n")
+        return EXIT_OK
+
+    def ext_action(self, ext: str, action: str, args: dict[str, object], terminal: Terminal) -> int:
+        if _refused(terminal, f"{ext} {action}", EXT_REFUSAL):
+            return EXIT_USAGE
+        try:
+            with closing(
+                DaemonLauncher(self._paths, clock=SystemClock()).connect(client="cli")
+            ) as client:
+                result = client.call("ext_human", {"ext": ext, "action": action, "args": args})
+        except RelayError as exc:
+            return _fail(exc, EXIT_ERROR)
+        lines = [str(result.get("text"))]
+        tasks = result.get("tasks")
+        if isinstance(tasks, list):
+            lines += [
+                f"{t.get('id')}  {t.get('state')}  p{t.get('priority')}  {t.get('title')}"
+                + (f"  ({t.get('assignee')})" if t.get("assignee") else "")
+                for t in tasks
+                if isinstance(t, dict)
+            ]
+        sys.stdout.write(_safe_text("\n".join(lines)) + "\n")
         return EXIT_OK
 
     def ui(self, port: int, terminal: Terminal, *, open_browser: bool) -> int:

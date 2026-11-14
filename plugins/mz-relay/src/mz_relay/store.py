@@ -827,6 +827,15 @@ class Store:
                 (int(online), now, token),
             )
 
+    def record_ext_change(self, ext: str, actor: str, now: float) -> None:
+        """An `ext` event: an extension changed its own state, so watchers reload it."""
+        _check_name(ext, "ext")
+        with self._transaction() as conn:
+            conn.execute(
+                "INSERT INTO events(at, kind, source, agent) VALUES(?, 'ext', ?, ?)",
+                (now, ext, actor),
+            )
+
     def mark_all_offline(self) -> None:
         with self._transaction() as conn:
             changed = conn.execute("UPDATE registrations SET online = 0 WHERE online = 1").rowcount

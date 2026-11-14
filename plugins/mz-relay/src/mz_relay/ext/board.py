@@ -23,6 +23,17 @@ ACTIVE = ("open", "in_progress", "review")
 PROJECT_RE = re.compile(r"[a-z][a-z0-9-]{0,31}")
 LIMITS = {"title": 200, "body": 8000, "acceptance": 4000, "note": 2000, "reason": 2000}
 EVENTS_SHOWN = 10
+TASK_FIELDS = (
+    "id",
+    "project",
+    "title",
+    "state",
+    "priority",
+    "creator",
+    "assignee",
+    "lease_until",
+    "updated_at",
+)
 
 SCHEMA = (
     """CREATE TABLE projects(
@@ -225,6 +236,8 @@ class Board:
             HumanAction("reassign", self.reassign),
             HumanAction("approve", self.approve),
             HumanAction("cancel", self.cancel),
+            HumanAction("overview", self.overview, mutates=False),
+            HumanAction("task", self.task_detail, mutates=False),
         ]
 
     def on_event(self, db: sqlite3.Connection, event: Event, now: float) -> None:
@@ -495,6 +508,54 @@ class Board:
                 call.db, task["id"], call.now, "user", "cancelled", args.optional_text("reason")
             )
         return {"text": f"cancelled {task['id']}"}
+
+    def overview(self, call: HumanCall) -> dict[str, object]:
+        """Every project with its grants and tasks; the user sees all, whatever the access."""
+        _Args(call.args, set())
+        db = call.db
+        with _tx(db):
+            self._reclaim(db, call.now)
+            grants: dict[str, dict[str, str]] = {}
+            for row in db.execute("SELECT project, agent, access FROM grants ORDER BY agent"):
+                grants.setdefault(row["project"], {})[row["agent"]] = row["access"]
+            projects = [
+                {
+                    "name": row["name"],
+                    "title": row["title"],
+                    "default_access": row["default_access"],
+                    "archived": bool(row["archived"]),
+                    "grants": grants.get(row["name"], {}),
+                }
+                for row in db.execute("SELECT * FROM projects ORDER BY name")
+            ]
+            tasks = [
+                {
+                    **{key: row[key] for key in TASK_FIELDS},
+                    "ready": row["state"] == "open" and self._ready(db, row["id"]),
+                }
+                for row in db.execute("SELECT * FROM tasks ORDER BY project, priority DESC, n")
+            ]
+        text = f"{len(projects)} projects, {len(tasks)} tasks"
+        return {"text": text, "projects": projects, "tasks": tasks}
+
+    def task_detail(self, call: HumanCall) -> dict[str, object]:
+        task_id = _Args(call.args, {"id"}).text("id")
+        db = call.db
+        task = self._any_task(db, task_id)
+        deps = db.execute(
+            "SELECT t.id, t.state FROM task_deps d JOIN tasks t ON t.id = d.depends_on "
+            "WHERE d.task = ? ORDER BY t.n",
+            (task_id,),
+        ).fetchall()
+        events = db.execute(
+            "SELECT at, actor, kind, note FROM task_events WHERE task = ? ORDER BY id", (task_id,)
+        ).fetchall()
+        return {
+            "text": self._task_detail(db, task, call.now),
+            "task": {key: task[key] for key in (*TASK_FIELDS, "body", "acceptance")},
+            "deps": [dict(dep) for dep in deps],
+            "events": [dict(event) for event in events],
+        }
 
     # Helpers
 
