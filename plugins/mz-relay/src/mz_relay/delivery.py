@@ -98,6 +98,11 @@ def unreachable_reason(to: str, detail: str) -> str:
     return f"{UNREACHABLE_PREFIX} {detail}; waits for {to} to reconnect"
 
 
+def _same_route(a: Registration, b: Registration) -> bool:
+    # last_seen and online change on every heartbeat; only these say where delivery goes.
+    return (a.token, a.delivery_mode, a.binding) == (b.token, b.delivery_mode, b.binding)
+
+
 def retry_reason(attempt: int, detail: str) -> str:
     return f"attempt {attempt} failed: {detail}"
 
@@ -362,7 +367,7 @@ class DeliveryEngine:
         # A register that committed before the park woke nothing, since the row was not parked yet.
         env = row.envelope
         latest = self._deps.store.latest_delivery_registration(env.to)
-        if latest is None or latest == seen:
+        if latest is None or (seen is not None and _same_route(latest, seen)):
             return
         change = StatusChange(Status.QUEUED, next_attempt_at=self._deps.clock.now())
         if self._write(row, change, Status.QUEUED, "re-arm after parking"):

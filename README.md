@@ -311,7 +311,7 @@ Approve? [y/N] y
 approved 01J...
 ```
 
-`approve` and `deny [--reason T]` show the route and the first 200 characters of the body and ask on `/dev/tty`. `y` or `yes` confirms. Anything else prints `not approved` or `not denied` and exits 1. Approving queues the message for delivery, and denying tells the sender through a notice.
+`approve` and `deny [--reason T]` show the route and the first 200 characters of the body and ask on `/dev/tty`. `y` or `yes` confirms. Anything else prints `not approved` or `not denied` and exits 1. Approving queues the message for delivery, and denying tells the sender through a notice. Ids are unique per sender only. When held messages from several senders share an id, `approve` names the other senders, and `--source NAME` picks one.
 
 `approve`, `deny` and `context extend` refuse to run (exit 2, `approve, deny and context extend must be run by the user in a terminal, not by an agent`) when stdin is not a terminal or an agent marker is in the environment: `CLAUDECODE`, `CLAUDE_CODE_MESSAGING_SOCKET`, `CODEX_THREAD_ID`, `OPENCODE`, `PI_CODING_AGENT`. Only the two `CLAUDE*` markers are verified against a real harness. The other three are UNTESTED.
 

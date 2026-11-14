@@ -19,6 +19,7 @@ from mz_relay.doctor import Doctor, Finding
 from mz_relay.envelope import Status
 from mz_relay.errors import (
     DaemonUnavailable,
+    NotFound,
     PathError,
     ProtocolError,
     ProtocolMismatch,
@@ -48,6 +49,7 @@ AGENT_ENV_MARKERS = (
     "OPENCODE",
     "PI_CODING_AGENT",
 )
+SOURCE_HELP = "the sender, when held messages from several senders share the id"
 REFUSAL = "approve, deny and context extend must be run by the user in a terminal, not by an agent"
 LIST_PREVIEW_CHARS = 60
 CONTEXT_EXTEND_BY = 20
@@ -83,6 +85,7 @@ class Decision:
     command: str
     msg_id: str
     reason: str | None = None
+    source: str | None = None
 
     def __post_init__(self) -> None:
         if self.command not in ("approve", "deny"):
@@ -185,8 +188,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     approve = commands.add_parser("approve", help="release a held message after confirming")
     approve.add_argument("id")
+    approve.add_argument("--source", default=None, metavar="NAME", help=SOURCE_HELP)
     deny = commands.add_parser("deny", help="refuse a held message after confirming")
     deny.add_argument("id")
+    deny.add_argument("--source", default=None, metavar="NAME", help=SOURCE_HELP)
     deny.add_argument("--reason", default=None, metavar="T", help="reason shown to the sender")
     context = commands.add_parser("context", help="work with a message context")
     context_commands = context.add_subparsers(
@@ -261,7 +266,8 @@ def main(argv: Sequence[str] | None = None, *, terminal: Terminal | None = None)
         return user.log(args.context, args.limit)
     if args.command in ("approve", "deny"):
         reason = args.reason if args.command == "deny" else None
-        return user.decide(Decision(args.command, args.id, reason), terminal or user_terminal())
+        decision = Decision(args.command, args.id, reason, args.source)
+        return user.decide(decision, terminal or user_terminal())
     if args.command == "context":
         return user.context_extend(args.context_id, args.by, terminal or user_terminal())
     parser.error(f"unhandled command {args.command!r}")
@@ -487,10 +493,16 @@ class UserCommands:
         if not held:
             raise ProtocolError("invalid_request", f"relayd's held for {msg_id} listed no message")
         # Ids are unique per sender only; one row is decided per run, so each gets its own prompt.
-        msg = held[0]
-        if len(held) > 1:
-            others = len(held) - 1
-            sys.stdout.write(f"{others} more held message(s) share {msg_id}; run again for them\n")
+        if decision.source is not None:
+            held = [msg for msg in held if msg.get("source") == decision.source]
+            if not held:
+                raise NotFound("not_found", f"no held message {msg_id} from {decision.source}")
+        msg, others = held[0], [str(other.get("source")) for other in held[1:]]
+        if others:
+            sys.stdout.write(
+                f"{len(others)} more held message(s) share {msg_id}, from {', '.join(others)};"
+                " pick one with --source NAME\n"
+            )
         sys.stdout.write(f"{msg_id}: {_route(msg)}\n{_safe_text(str(msg.get('preview')))}\n")
         sys.stdout.flush()
         verb = "Approve" if command == "approve" else "Deny"

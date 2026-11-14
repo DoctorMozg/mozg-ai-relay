@@ -35,6 +35,22 @@ class RegisteringAdapter(FakeAdapter):
         return super().validate_binding(spec, binding)
 
 
+class HeartbeatAdapter(FakeAdapter):
+    """Runs `on_validate` once, during the first binding validation."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.on_validate: Callable[[], None] | None = None
+
+    def validate_binding(
+        self, spec: AgentSpec, binding: Mapping[str, object] | None
+    ) -> DeliveryBinding | None:
+        if self.on_validate is not None:
+            hook, self.on_validate = self.on_validate, None
+            hook()
+        return super().validate_binding(spec, binding)
+
+
 class TestOutcomes:
     def test_confirmed_marks_row_delivered_via_adapter_with_rendered_text(
         self, make_rig: MakeRig
@@ -349,3 +365,19 @@ class TestParkRace:
 
         assert rig.row(msg_id).status == Status.DELIVERED
         assert [job.binding.data for job in adapter.delivered] == [BOB_SOCKET]
+
+    def test_a_heartbeat_on_the_same_registration_does_not_rearm_a_pull_only_row(
+        self, make_rig: MakeRig
+    ) -> None:
+        adapter = HeartbeatAdapter()
+        rig = make_rig(adapter)
+        token = rig.register("bob", {})
+        msg_id = rig.queue()
+        # last_seen moves between bind and park; token, mode and binding stay the same.
+        adapter.on_validate = lambda: rig.store.set_online(token, True, rig.clock.now() + 1)
+
+        rig.engine.run_once(OPENCODE)
+
+        parked = rig.row(msg_id)
+        assert parked.status == Status.QUEUED
+        assert parked.next_attempt_at is None, "a last_seen bump re-armed the pull-only row"

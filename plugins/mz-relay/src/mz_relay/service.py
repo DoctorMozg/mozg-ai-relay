@@ -35,6 +35,7 @@ from mz_relay.store import DuplicateMessage, Registration, StatusChange, Store, 
 log = logging.getLogger(__name__)
 
 CLIENTS = frozenset({"mcp", "cli", "hook", "pi", "opencode"})
+# A cross-version contract: a newer CLI or launcher stops an older relayd that refused its hello.
 NO_HELLO_OPS = frozenset({"hello", "shutdown"})
 LOG_LIMIT_MAX = 200
 LOG_LIMIT_DEFAULT = 50

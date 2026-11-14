@@ -417,6 +417,83 @@ class TestApproveTargetsOneRow:
             assert (code, changed) == (1, [])
 
 
+class TestApproveSource:
+    """`--source` picks one of several held rows sharing an id; without it a hint names the rest."""
+
+    @pytest.fixture
+    def shared(self, relay: Relay) -> tuple[str, dict[str, tuple[RelayClient, str]]]:
+        relay.add_agents(ERIN_CORPORATE)
+        senders = {name: relay.agent(name) for name in ("erin", "carol")}
+        alice_client, alice = relay.agent("alice")
+        question = relay.send(alice_client, alice, "carol")
+        msg_id = relay.send(*senders["erin"], "alice", msg_id=new_id())
+        relay.send(*senders["carol"], "alice", msg_id=msg_id, in_reply_to=question)
+        return msg_id, senders
+
+    @staticmethod
+    def statuses(
+        relay: Relay, msg_id: str, senders: dict[str, tuple[RelayClient, str]]
+    ) -> dict[str, str]:
+        return {name: relay.sent_status(c, tok, msg_id) for name, (c, tok) in senders.items()}
+
+    @pytest.mark.parametrize(("command", "after"), [("approve", "queued"), ("deny", "denied")])
+    @pytest.mark.parametrize("pick", ["erin", "carol"])
+    def test_source_decides_that_senders_row_only(
+        self,
+        relay: Relay,
+        shared: tuple[str, dict[str, tuple[RelayClient, str]]],
+        capsys: pytest.CaptureFixture[str],
+        command: str,
+        after: str,
+        pick: str,
+    ) -> None:
+        msg_id, senders = shared
+        other = "carol" if pick == "erin" else "erin"
+
+        code = main([command, msg_id, "--source", pick], terminal=FakeTerminal().build())
+
+        out = capsys.readouterr().out
+        assert code == 0
+        assert f"{msg_id}: {pick} (corporate) → alice (personal)" in out
+        assert "share" not in out
+        assert self.statuses(relay, msg_id, senders) == {pick: after, other: "held"}
+
+    def test_a_source_with_no_held_row_is_not_found_and_asks_nothing(
+        self,
+        relay: Relay,
+        shared: tuple[str, dict[str, tuple[RelayClient, str]]],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        msg_id, senders = shared
+        user = FakeTerminal()
+
+        code = main(["approve", msg_id, "--source", "bob"], terminal=user.build())
+
+        assert code == 1
+        assert (
+            capsys.readouterr().err == f"mz-relay: not_found: no held message {msg_id} from bob\n"
+        )
+        assert user.prompts == []
+        assert self.statuses(relay, msg_id, senders) == {"erin": "held", "carol": "held"}
+
+    def test_without_source_the_hint_names_the_other_senders(
+        self,
+        relay: Relay,
+        shared: tuple[str, dict[str, tuple[RelayClient, str]]],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        msg_id, _ = shared
+
+        assert main(["approve", msg_id], terminal=FakeTerminal(answer="n").build()) == 1
+
+        first, route = capsys.readouterr().out.splitlines()[:2]
+        shown = route.split(": ", 1)[1].split(" ", 1)[0]
+        other = "carol" if shown == "erin" else "erin"
+        assert first == (
+            f"1 more held message(s) share {msg_id}, from {other}; pick one with --source NAME"
+        )
+
+
 class TestApproveNeverProbes:
     """A message held after the lookup must stay held: approve and deny only decide on a yes."""
 

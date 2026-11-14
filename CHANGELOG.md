@@ -4,8 +4,13 @@ All notable changes are listed here. The format follows Keep a Changelog, and ve
 
 ## [Unreleased]
 
+### Added
+
+- `mz-relay approve|deny <id> --source NAME` picks one of several held messages that share an id; without it, `approve` names the other senders.
+
 ### Fixed
 
+- A heartbeat on an unchanged registration no longer re-arms a pull-only message for one extra delivery pass.
 - `mz-relay held`, `approve`, `deny` and `log` show line separators (U+2028, U+2029) and bidi controls in peer text as U+FFFD, like other control characters.
 - `mz-relay log --context ""` is a usage error (exit 2) instead of a relayd error (exit 1).
 - `mz-relay install opencode` installs under `$XDG_CONFIG_HOME/opencode/` when that is set, where OpenCode looks for it.
