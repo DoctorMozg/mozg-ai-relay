@@ -25,7 +25,7 @@ All notable changes are listed here. The format follows Keep a Changelog, and ve
 
 ### Changed
 
-- README: `-c` does not stop `codex queue` on Codex 0.169. A thread that has had no turn yet does, in daemon mode and with `-c`, so setup now sends the thread one message after `/rename`.
+- README: a Codex started with `-c` is reachable after all. relayd queues by thread id, which reaches the thread before its first turn and with `-c` (tested on Codex 0.169.0); only a hand-typed `codex queue --thread <name>` needs a thread that has had a turn.
 - Tested versions: Claude 2.1.325, Codex 0.169.0. Every live test and the demo passed against them, with Pi 1.5.2 and OpenCode 1.19.5.
 - OpenCode adapter log lines carry `mz-relay-oc[<pid>]` and a level, like the Pi adapter's; `MZ_RELAY_RECONNECT_MS` is read with `Number`, as Pi reads it.
 - Store schema 2 adds an index on `messages(context_id, created_at)` for `log --context`; a schema 1 database is migrated when relayd opens it.

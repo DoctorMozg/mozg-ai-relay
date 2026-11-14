@@ -138,7 +138,7 @@ Prints a `[mcp_servers.mz-relay]` table for `<CODEX_HOME>/config.toml`. Paste it
 /rename reviewer
 ```
 
-The name must equal the roster's `codex_thread`. Then send the thread one message of your own, such as `hi`. Codex 0.169 with its default daemon, and any Codex started with `-c`, does not count a thread that has had no turn yet as an active session. `codex queue` then fails with `No active session found matching '<name>'`, and relayd retries twice, then marks the message `undeliverable` about 10 s after it was sent, with that error as the reason. After one turn, delivery works in either mode and with `-c`. Delivery goes to the open TUI thread, so the thread must be running.
+The name must equal the roster's `codex_thread`. relayd resolves the name to the thread id in `session_index.jsonl` and queues by id, which reaches the thread before its first turn, with or without the app-server daemon, and when Codex was started with `-c` (tested on Codex 0.169.0). A hand-typed `codex queue --thread <name>` looks the name up among active sessions instead, and a thread with no turn yet is not one (`No active session found`). Delivery goes to the open TUI thread, so the thread must be running.
 
 Codex 0.168 and newer start MCP servers in a shared `codex app-server` daemon (feature `daemon_auto_start`, on by default) rather than in the TUI. The daemon runs under `systemd --user` and never sees the shell that started the TUI. With the default paths that makes no difference. A custom `MZ_RELAY_HOME` or XDG directory reaches the MCP server only when the TUI runs the server itself: start it with `codex --disable daemon_auto_start` and, when a daemon is already running, pick `Run without daemon this time`. `Restart with these settings` changes the shared daemon for every Codex client. The demo and `make live-codex` start Codex this way.
 
@@ -428,7 +428,7 @@ Logs are `relayd.log` and `hooks.log` in the state directory (`~/.local/state/mz
 
 ## UNTESTED
 
-Every live test and the demo passed on 2026-11-14 against the [tested versions](#tested-versions), and no behaviour in this README rests on a manual probe alone. The live tests do not cover `codex queue` before a thread's first turn; manual probes on Codex 0.169.0 found it fails in daemon mode and with `-c` (see [Codex](#codex)).
+Every live test and the demo passed on 2026-11-14 against the [tested versions](#tested-versions), and no behaviour in this README rests on a manual probe alone.
 
 ## Development
 

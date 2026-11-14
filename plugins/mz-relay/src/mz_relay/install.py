@@ -142,8 +142,7 @@ def codex_snippet(bin_path: Path, name: str) -> str:
     """The config.toml table that starts the mz-relay MCP server in a Codex account, as TOML."""
     _check_snippet_args(bin_path, name)
     return (
-        f'# Paste into <CODEX_HOME>/config.toml of the account that runs "{name}".'
-        " After /rename, send the thread one message.\n"
+        f'# Paste into <CODEX_HOME>/config.toml of the account that runs "{name}".\n'
         f"[mcp_servers.{MCP_SERVER_NAME}]\n"
         f"command = {toml_string(str(bin_path))}\n"
         'args = ["mcp", "--harness", "codex"]\n'

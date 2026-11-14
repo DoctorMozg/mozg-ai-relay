@@ -39,10 +39,7 @@ PEER_AGENT = {
     "permission": {"edit": "deny", "bash": "deny", "webfetch": "deny", "task": "deny"},
 }
 KINDS = pytest.mark.parametrize("kind", ["pi", "opencode"])
-CODEX_COMMENT = (
-    '# Paste into <CODEX_HOME>/config.toml of the account that runs "reviewer".'
-    " After /rename, send the thread one message."
-)
+CODEX_COMMENT = '# Paste into <CODEX_HOME>/config.toml of the account that runs "reviewer".'
 
 DEFAULT_DEST = {
     "pi": Path(".pi") / "agent" / "extensions" / "mz-relay" / "index.ts",
