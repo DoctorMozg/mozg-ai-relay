@@ -507,6 +507,28 @@ class TestCodexAgents:
     def test_read_only_with_a_read_only_sandbox_does_not_warn(self, healthy: DoctorSetup) -> None:
         assert of(healthy.check(), "reviewer", "warn") == []
 
+    def test_a_profile_that_loosens_the_sandbox_warns_naming_it(self, healthy: DoctorSetup) -> None:
+        profile = healthy.codex_home / "wide.config.toml"
+        profile.write_text('sandbox_mode = "workspace-write"\n', encoding="utf-8")
+
+        text = text_of(healthy.check(), "reviewer", "warn")
+
+        assert "--profile wide" in text
+        assert str(profile) in text
+        assert "workspace-write" in text
+
+    @pytest.mark.parametrize(
+        "profile_text", ['sandbox_mode = "read-only"\n', 'model = "gpt-5"\n'], ids=["same", "unset"]
+    )
+    def test_a_profile_that_keeps_the_sandbox_does_not_warn(
+        self, healthy: DoctorSetup, profile_text: str
+    ) -> None:
+        (healthy.codex_home / "safe.config.toml").write_text(profile_text, encoding="utf-8")
+
+        findings = healthy.check()
+
+        assert of(findings, "reviewer", "warn") == [], shown(findings)
+
     def test_a_full_tools_agent_needs_no_sandbox(self, healthy: DoctorSetup) -> None:
         healthy.write_roster(healthy.roster(reviewer_tools="full"))
         healthy.codex_config.unlink()

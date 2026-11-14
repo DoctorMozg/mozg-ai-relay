@@ -8,6 +8,7 @@ All notable changes are listed here. The format follows Keep a Changelog, and ve
 
 - `mz-relay approve|deny <id> --source NAME` picks one of several held messages that share an id; without it, `approve` names the other senders.
 - `mz-relay doctor` reports a state or runtime directory owned by another uid as an error; relayd refuses such a directory.
+- `mz-relay doctor` warns, for a `read_only` Codex agent, about each `<CODEX_HOME>/<name>.config.toml` profile whose `sandbox_mode` is not `read-only`; `codex --profile <name>` layers it over `config.toml`.
 
 ### Fixed
 

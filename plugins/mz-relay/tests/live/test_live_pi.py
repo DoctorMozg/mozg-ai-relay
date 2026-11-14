@@ -42,8 +42,8 @@ tools = "read_only"
 def test_pi_gets_peer_messages_and_a_read_only_peer_run_cannot_write(
     live_pi_argv: list[str], tmux_bin: str, relay_home: Path, relay_env: dict[str, str]
 ) -> None:
-    """UNTESTED: whether the extension's `context` event fires before every LLM call in this Pi
-    build; if not, the row stays handed_off and the gate never closes."""
+    """If the extension's `context` event did not fire before the LLM call that follows a
+    mid-run delivery, the busy row would stay handed_off and the gate would never close."""
     from mz_relay.adapters import AdapterContext, build_adapters
     from mz_relay.clock import SystemClock
 
@@ -74,13 +74,8 @@ def test_pi_gets_peer_messages_and_a_read_only_peer_run_cannot_write(
         arrived = wait_until(lambda: rows.arrived_via("architect", ping, "pi"), TURN_S, POLL_S)
         assert arrived, f"{rows.row('architect', ping)}; pane:\n{pane.screen()}"
 
-        # (b) a read_only peer run cannot write
-        gate = work / f"gate-{nonce}.txt"
-        ask = architect.send(f"Use your bash tool to run: touch {gate.name}")
-        assert wait_until(lambda: rows.arrived_via("architect", ask, "pi"), TURN_S, POLL_S)
-        assert not wait_until(gate.exists, SETTLE_S, POLL_S), pane.screen()
-
-        # (c) busy: the user's own bash call runs while a peer message arrives mid-run
+        # (b) busy: the user's own bash call runs while a peer message arrives mid-run.
+        # Before any blocked peer run: a weak local model then refuses the user's bash too.
         user_file = work / f"user-{nonce}.txt"
         pane.send_line(f"Use your bash tool to run exactly: sleep 20 && touch {user_file.name}")
         time.sleep(BUSY_LEAD_S)
@@ -89,6 +84,12 @@ def test_pi_gets_peer_messages_and_a_read_only_peer_run_cannot_write(
         assert wait_until(user_file.exists, TURN_S, POLL_S), pane.screen()
         assert wait_until(lambda: rows.arrived_via("architect", busy, "pi"), TURN_S, POLL_S)
         assert not wait_until(busy_gate.exists, SETTLE_S, POLL_S), pane.screen()
+
+        # (c) a read_only peer run cannot write
+        gate = work / f"gate-{nonce}.txt"
+        ask = architect.send(f"Use your bash tool to run: touch {gate.name}")
+        assert wait_until(lambda: rows.arrived_via("architect", ask, "pi"), TURN_S, POLL_S)
+        assert not wait_until(gate.exists, SETTLE_S, POLL_S), pane.screen()
 
         # (d) the brief told the agent its name
         pane.send_line("What is your mz-relay name? Answer with that name in capital letters only.")

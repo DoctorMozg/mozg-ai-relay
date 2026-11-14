@@ -37,6 +37,8 @@ VERSION_RE = re.compile(r"\d+\.\d+\.\d+", re.ASCII)
 VERSION_TIMEOUT_S = 10.0
 HELLO_TIMEOUT_S = 5.0
 READ_ONLY_SANDBOX = "read-only"
+# `codex --profile NAME` layers <CODEX_HOME>/NAME.config.toml over config.toml (Codex 0.169).
+CODEX_PROFILE_SUFFIX = ".config.toml"
 
 
 @dataclass(frozen=True)
@@ -162,6 +164,7 @@ class Doctor:
                 sandbox = self._sandbox(spec.name, home / "config.toml")
                 if sandbox is not None:
                     yield sandbox
+                yield from self._profile_sandboxes(spec.name, home)
         if self._which(spec.codex_bin) is None:
             yield Finding("warn", spec.name, f"codex_bin {spec.codex_bin} is not on PATH")
 
@@ -194,6 +197,22 @@ class Doctor:
         if mode != READ_ONLY_SANDBOX:
             return Finding("warn", name, f"{need}; found {mode!r}")
         return None
+
+    def _profile_sandboxes(self, name: str, home: Path) -> Iterator[Finding]:
+        for profile in sorted(home.glob(f"*{CODEX_PROFILE_SUFFIX}")):
+            started = (
+                f"a Codex started with --profile {profile.name.removesuffix(CODEX_PROFILE_SUFFIX)}"
+            )
+            try:
+                doc = tomllib.loads(profile.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, RecursionError) as exc:
+                yield Finding(
+                    "warn", name, f"{started} reads {profile}, which cannot be read: {exc}"
+                )
+                continue
+            mode = doc.get("sandbox_mode", READ_ONLY_SANDBOX)
+            if mode != READ_ONLY_SANDBOX:
+                yield Finding("warn", name, f"{started} runs sandbox_mode {mode!r} from {profile}")
 
     def _versions(self, roster: Roster | None) -> Iterator[Finding]:
         # Keyed on the resolved binary, so a codex_bin that is the PATH codex is probed once.
