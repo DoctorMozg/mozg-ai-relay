@@ -1,4 +1,4 @@
-"""RelayToolBackend against an in-process relayd, UnavailableBackend and `mz-relay mcp`."""
+"""RelayToolBackend against an in-process relayd, LateRegistrationBackend and `mz-relay mcp`."""
 
 from __future__ import annotations
 
@@ -20,8 +20,19 @@ from mz_relay.mcp_server import McpServer, SendArgs
 from mz_relay.paths import Paths
 from mz_relay.presence import PresenceSession, RegisterArgs
 from mz_relay.roster import Harness
-from mz_relay.tool_backend import RelayToolBackend, UnavailableBackend
-from relay_rig import PROC_WAIT_S, McpProc, NoSpawn, launcher_for, run_in_thread
+from mz_relay.tool_backend import LateRegistrationBackend, RelayToolBackend
+from relay_rig import (
+    PROC_WAIT_S,
+    McpProc,
+    NoSpawn,
+    launcher_for,
+    online_names,
+    paths_in,
+    pull_roster,
+    relayd_status,
+    run_in_thread,
+    stop_daemon,
+)
 
 HELD_TEXT = "held {id} for user approval — ask your user to run: mz-relay approve {id}"
 
@@ -188,9 +199,40 @@ class TestRelayToolBackend:
         assert len(ids.issued) <= 1, f"the retry drew a second id: {ids.issued}"
 
 
-class TestUnavailableBackend:
+class Registrar:
+    """Fails the first `failures` registrations, then registers alice with the in-process relayd."""
+
+    def __init__(self, paths: Paths, failures: int) -> None:
+        self.paths = paths
+        self.failures = failures
+        self.attempts = 0
+        self.presence: PresenceSession | None = None
+
+    def __call__(self) -> RelayToolBackend:
+        self.attempts += 1
+        if self.attempts <= self.failures:
+            raise RelayError("daemon_unavailable", "relayd did not start")
+        launcher = launcher_for(self.paths, NoSpawn())
+        args = RegisterArgs(
+            name="alice",
+            harness=Harness.OPENCODE,
+            cwd=self.paths.config_dir,
+            pid=os.getpid(),
+            client="mcp",
+        )
+        self.presence = PresenceSession(launcher, args, clock=SystemClock())
+        self.presence.start()
+        return RelayToolBackend(self.presence, launcher)
+
+
+def never_registers() -> RelayToolBackend:
+    raise RelayError("daemon_unavailable", "relayd did not start")
+
+
+class TestLateRegistrationBackend:
     def test_every_tool_and_the_instructions_report_unavailable(self) -> None:
-        backend = UnavailableBackend(RelayError("daemon_unavailable", "relayd did not start"))
+        error = RelayError("daemon_unavailable", "relayd did not start")
+        backend = LateRegistrationBackend(error, never_registers)
         server = McpServer(backend, version=__version__)
         expected = "mz-relay is unavailable: daemon_unavailable: relayd did not start"
         init = {"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {}}
@@ -208,6 +250,33 @@ class TestUnavailableBackend:
         for result in results:
             assert result["isError"] is True
             assert expected in result["content"][0]["text"]
+
+    def test_a_tool_call_after_the_cause_is_fixed_registers_and_carries_the_brief_once(
+        self, daemon_paths: Paths
+    ) -> None:
+        registrar = Registrar(daemon_paths, failures=1)
+        error = RelayError("daemon_unavailable", "relayd did not start")
+        backend = LateRegistrationBackend(error, registrar)
+        server = McpServer(backend, version=__version__)
+        try:
+            first = tool_call(server, "peers", {})["result"]
+            second = tool_call(server, "peers", {})["result"]
+            third = tool_call(server, "peers", {})["result"]
+            assert registrar.presence is not None
+            brief = registrar.presence.current().brief
+            online = online_names(relayd_status(daemon_paths.socket))
+        finally:
+            backend.close()
+
+        assert first["isError"] is True
+        assert second["isError"] is False
+        assert second["content"][0]["text"].startswith(brief)
+        assert "bob" in second["content"][0]["text"]
+        assert third["isError"] is False
+        assert brief not in third["content"][0]["text"]
+        assert registrar.attempts == 2
+        assert "alice" in online
+        assert "alice" not in online_names(relayd_status(daemon_paths.socket))
 
 
 class TestRunMcp:
@@ -228,7 +297,7 @@ class TestRunMcp:
         assert exit_code == 0
         assert [line.split(" : ")[0] for line in peers.splitlines()] == ["bob", "carol"]
 
-    def test_unknown_name_serves_the_unavailable_backend_and_exits_0_at_eof(
+    def test_unknown_name_answers_unavailable_and_exits_0_at_eof(
         self, daemon_paths: Paths, relay_env: dict[str, str], relay_home: Path
     ) -> None:
         expected = "mz-relay is unavailable: unknown_agent"
@@ -245,7 +314,7 @@ class TestRunMcp:
         assert expected in peers["content"][0]["text"]
         assert exit_code == 0
 
-    def test_a_state_dir_that_cannot_be_created_serves_the_unavailable_backend(
+    def test_a_state_dir_that_cannot_be_created_answers_unavailable(
         self, relay_env: dict[str, str], relay_home: Path
     ) -> None:
         # MZ_RELAY_HOME is a file, so the launcher cannot create its state dir inside it.
@@ -262,4 +331,24 @@ class TestRunMcp:
 
         assert "mz-relay is unavailable: path_invalid" in init["instructions"]
         assert peers["isError"] is True
+        assert exit_code == 0
+
+    def test_a_roster_written_after_start_is_used_by_the_next_tool_call(
+        self, relay_env: dict[str, str], relay_home: Path
+    ) -> None:
+        paths = paths_in(relay_home)
+        mcp = McpProc("alice", relay_env, cwd=relay_home, log=relay_home / "mcp.log")
+        try:
+            init = mcp.initialize()
+            before = mcp.tool_result("peers")
+            paths.roster.write_text(pull_roster(relay_home), encoding="utf-8")
+            after = mcp.tool("peers")
+            exit_code = mcp.finish()
+        finally:
+            mcp.close()
+            stop_daemon(paths.socket)
+
+        assert "mz-relay is unavailable" in init["instructions"]
+        assert before["isError"] is True
+        assert [line.split(" : ")[0] for line in after.splitlines()][-2:] == ["bob", "carol"]
         assert exit_code == 0

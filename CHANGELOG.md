@@ -12,6 +12,7 @@ All notable changes are listed here. The format follows Keep a Changelog, and ve
 
 ### Fixed
 
+- The MCP server registers again on each tool call after a failed start (no roster yet, relayd down, unknown name) instead of answering `unavailable` until its process ends; the first answer after a late registration carries the session brief.
 - A Claude session's first peer message is no longer dropped: Claude 2.1.325 writes `sessions/<pid>.json` about half a second before it adds `status`, and such an entry now reads as busy instead of invalid.
 - `mz-relay snippet codex` adds `env_vars` for `MZ_RELAY_HOME`, `MZ_RELAY_PYTHON` and the XDG variables, which Codex otherwise drops from the MCP server's environment.
 - The demo answers Codex's startup pickers (update offer, daemon choice, hook review) with the key that changes no setting, instead of typing `/rename` into them, and starts Codex with `--disable daemon_auto_start` so the demo's `MZ_RELAY_HOME` reaches its MCP server.

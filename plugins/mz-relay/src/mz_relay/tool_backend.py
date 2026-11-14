@@ -1,4 +1,4 @@
-"""The MCP tools backed by relayd, the fallback when registration fails, and `mz-relay mcp`."""
+"""The MCP tools backed by relayd, the retry after a failed registration, and `mz-relay mcp`."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from mz_relay.errors import (
     RelayUnavailable,
 )
 from mz_relay.launcher import DaemonLauncher
-from mz_relay.mcp_server import INBOX_LIMIT_MAX, INBOX_LIMIT_MIN, McpServer, SendArgs, ToolBackend
+from mz_relay.mcp_server import INBOX_LIMIT_MAX, INBOX_LIMIT_MIN, McpServer, SendArgs
 from mz_relay.paths import Paths, user_home
 from mz_relay.presence import PresenceSession, RegisterArgs, configured_name
 from mz_relay.roster import Harness
@@ -54,6 +54,9 @@ class RelayToolBackend:
 
     def instructions(self) -> str:
         return self._presence.current().brief
+
+    def close(self) -> None:
+        self._presence.close()
 
     def send(self, args: SendArgs) -> str:
         # Drawn once, so a retry after a lost connection dedupes instead of sending twice.
@@ -109,32 +112,53 @@ class RelayToolBackend:
         return text
 
 
-class UnavailableBackend:
-    """Keeps the MCP server answering when registration failed, so the agent sees why."""
+def _unavailable(error: RelayError) -> RelayUnavailable:
+    return RelayUnavailable(error.code, f"mz-relay is unavailable: {error.code}: {error.message}")
 
-    def __init__(self, error: RelayError) -> None:
+
+class LateRegistrationBackend:
+    """Serves the tools after a failed registration and registers again on each tool call.
+    Harnesses keep an MCP server running for long (Codex: a shared daemon), so a fix must land."""
+
+    def __init__(self, error: RelayError, register: Callable[[], RelayToolBackend]) -> None:
         if not isinstance(error, RelayError):
             raise TypeError(f"error must be a RelayError, got {type(error).__name__}")
-        self._code = error.code
-        self._text = f"mz-relay is unavailable: {error.code}: {error.message}"
+        self._error = error
+        self._register = register
+        self._backend: RelayToolBackend | None = None
 
     def instructions(self) -> str:
-        return self._text
+        return f"{_unavailable(self._error).message}. Each tool call tries to register again."
+
+    def close(self) -> None:
+        if self._backend is not None:
+            self._backend.close()
 
     def send(self, args: SendArgs) -> str:
-        raise self._error()
+        return self._call(lambda backend: backend.send(args))
 
     def inbox(self, limit: int) -> str:
-        raise self._error()
+        return self._call(lambda backend: backend.inbox(limit))
 
     def ack(self, msg_id: str) -> str:
-        raise self._error()
+        return self._call(lambda backend: backend.ack(msg_id))
 
     def peers(self) -> str:
-        raise self._error()
+        return self._call(lambda backend: backend.peers())
 
-    def _error(self) -> RelayUnavailable:
-        return RelayUnavailable(self._code, self._text)
+    def _call(self, tool: Callable[[RelayToolBackend], str]) -> str:
+        if self._backend is not None:
+            return tool(self._backend)
+        try:
+            backend = self._register()
+        except RelayError as exc:
+            log.info("registration still fails: %s: %s", exc.code, exc.message)
+            self._error = exc
+            raise _unavailable(exc) from exc
+        log.info("registered on a later tool call")
+        self._backend = backend
+        # The agent got the unavailable text at initialize, so its first answer carries the brief.
+        return f"{backend.instructions()}\n\n{tool(backend)}"
 
 
 class _Terminated(BaseException):
@@ -152,17 +176,20 @@ def run_mcp(harness: Harness, env: Mapping[str, str]) -> int:
         raise ValueError(f"mcp serves {allowed}, not {harness}")
     logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, stream=sys.stderr)
     previous = signal.signal(signal.SIGTERM, _on_sigterm)
-    presence: PresenceSession | None = None
+
+    def register() -> RelayToolBackend:
+        launcher = _launcher(env)
+        presence = PresenceSession(launcher, _register_args(harness, env), clock=SystemClock())
+        presence.start()
+        return RelayToolBackend(presence, launcher)
+
+    backend: RelayToolBackend | LateRegistrationBackend | None = None
     try:
-        backend: ToolBackend
         try:
-            launcher = _launcher(env)
-            presence = PresenceSession(launcher, _register_args(harness, env), clock=SystemClock())
-            presence.start()
-            backend = RelayToolBackend(presence, launcher)
+            backend = register()
         except RelayError as exc:
             log.warning("serving without relayd: %s: %s", exc.code, exc.message)
-            backend = UnavailableBackend(exc)
+            backend = LateRegistrationBackend(exc, register)
         server = McpServer(backend, version=__version__)
         return server.serve(_utf8(sys.stdin), _utf8(sys.stdout))
     except _Terminated:
@@ -170,8 +197,8 @@ def run_mcp(harness: Harness, env: Mapping[str, str]) -> int:
         return 0
     finally:
         signal.signal(signal.SIGTERM, previous)
-        if presence is not None:
-            presence.close()
+        if backend is not None:
+            backend.close()
 
 
 def _launcher(env: Mapping[str, str]) -> DaemonLauncher:
