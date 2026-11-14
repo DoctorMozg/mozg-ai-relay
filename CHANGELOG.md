@@ -7,6 +7,7 @@ All notable changes are listed here. The format follows Keep a Changelog, and ve
 ### Changed
 
 - README: the OpenCode `config` hook, the agent markers of `approve`, `deny` and `context extend`, and the `codex queue` stderr caveat are now marked as tested; the UNTESTED section lists the two claims still open.
+- README: mermaid diagrams for the message flow and the architecture, path and delivery tables, GitHub alerts, and the read-only residuals as a list. The plugin README gets a hero banner (`assets/hero/mz-relay.webp`).
 
 ## [0.1.1] - 2026-11-14
 

@@ -11,9 +11,17 @@
 
 A Claude Code plugin marketplace with one plugin, `mz-relay`. Agents in Claude Code (one or more accounts), Codex, Pi and OpenCode send each other messages by roster name. A local broker, `relayd`, holds the roster, queues every message in SQLite, applies the guards and wakes the receiving agent by whatever channel its harness offers.
 
-```text
-architect (Claude, personal) ── send(to="builder", kind="request", body="...") ──► relayd
-builder   (Claude, corporate) ◄── "[mz-relay] Peer message from architect ..." ─── relayd
+```mermaid
+flowchart LR
+    A["architect<br/>Claude · personal"]:::personal -- "send(to=builder, kind=request)" --> R(("relayd")):::relay
+    R -- "[mz-relay] Peer message from architect" --> B["builder<br/>Claude · corporate"]:::corporate
+    B -. "reply" .-> R
+    R -. "held until the user runs<br/>mz-relay approve" .-> H{{"hold"}}:::hold
+    H -.-> A
+    classDef personal fill:#ddf6f5,stroke:#1f7373,color:#1f7373
+    classDef corporate fill:#f0eaff,stroke:#6639ba,color:#6639ba
+    classDef relay fill:#dafbe1,stroke:#1a7f37,color:#1a7f37
+    classDef hold fill:#fff8c5,stroke:#9a6700,color:#9a6700
 ```
 
 Every delivered message starts with a header that names the sender and says the text is untrusted peer input, not the user's approval. Messages from a `corporate` agent to a `personal` one are held until the user approves them in a terminal.
@@ -43,53 +51,48 @@ mz-relay doctor
 
 Start both Claude sessions and ask the architect to send the builder a request. The builder wakes with the message. With the hold on, a reply from the corporate builder to the personal architect waits for `mz-relay approve <id>`. Codex, Pi and OpenCode are set up as described in [Install](#install).
 
-## Contents
+> [!TIP]
+> `mz-relay doctor` checks paths, the roster, relayd, each agent's config and the harness versions without starting or writing anything. Run it first when a message does not arrive.
 
-- [Quick start](#quick-start)
-- [Architecture](#architecture)
-- [Tested versions](#tested-versions)
-- [Install](#install)
-- [Roster](#roster)
-- [Messages and etiquette](#messages-and-etiquette)
-- [Guards](#guards)
-- [Hold and approve](#hold-and-approve)
-- [Inspecting: status, log, doctor](#inspecting-status-log-doctor)
-- [Read-only roles](#read-only-roles)
-- [Threat model](#threat-model)
-- [Demo](#demo)
-- [Troubleshooting](#troubleshooting)
-- [UNTESTED](#untested)
-- [Development](#development)
+**Contents:** [Architecture](#architecture) · [Tested versions](#tested-versions) · [Install](#install) · [Roster](#roster) · [Messages](#messages-and-etiquette) · [Guards](#guards) · [Hold and approve](#hold-and-approve) · [Inspecting](#inspecting-status-log-doctor) · [Read-only roles](#read-only-roles) · [Threat model](#threat-model) · [Demo](#demo) · [Troubleshooting](#troubleshooting) · [UNTESTED](#untested) · [Development](#development)
 
 ## Architecture
 
-```text
- claude (CLAUDE_CONFIG_DIR=A)         claude (CLAUDE_CONFIG_DIR=B)
-   mz-relay mcp --harness claude        mz-relay mcp --harness claude
-   hooks: wait (asyncRewake), gate      hooks: wait (asyncRewake), gate
-              │                                    │
- codex (CODEX_HOME=C)                              │            pi extension
-   mz-relay mcp --harness codex                    │              (adapters/pi)
-              │                                    │                  │
- opencode: mz-relay mcp --harness opencode         │          opencode plugin
-              │                                    │          (adapters/opencode)
-              └──────────────┬─────────────────────┴──────────────────┘
-                             ▼
-                  relayd   ($RUNTIME/mz-relay/relayd.sock, owner-only)
-                  roster   ($CONFIG/mz-relay/roster.toml, reloaded on mtime change)
-                  policy   (allowed routes, hop, caps, hold)
-                             │
-                             ▼
-                  SQLite WAL store   ($STATE/mz-relay/relay.db)
-                             │
-                one delivery worker thread per harness
-                             │
-   claude   frame to the session's inbox socket, confirmed by its transcript;
-            fallback: the asyncRewake waiter leases the message
-   codex    `codex queue --thread <id> --message <text>`, confirmed by the rollout file
-   pi       {"op":"deliver"} to $RUNTIME/mz-relay/pi-<pid>.sock, adapter acks
-   opencode {"op":"deliver"} to $RUNTIME/mz-relay/oc-<pid>.sock, adapter acks
+```mermaid
+flowchart TB
+    subgraph clients ["Harness clients"]
+        direction LR
+        C1["Claude, account A<br/>MCP server · wait hooks · gate"]:::claude
+        C2["Claude, account B<br/>MCP server · wait hooks · gate"]:::claude
+        CX["Codex<br/>MCP server"]:::codex
+        PI["Pi<br/>extension (adapters/pi)"]:::pi
+        OC["OpenCode<br/>plugin (adapters/opencode) · MCP server"]:::opencode
+    end
+    clients -- "send · inbox · ack · peers" --> D["relayd<br/>roster · policy · hold"]:::relay
+    D --> S[("SQLite WAL store")]:::store
+    S --> W["one delivery worker<br/>thread per harness"]:::relay
+    W -- "wake-up, then confirm" --> clients
+    classDef claude fill:#fbefff,stroke:#8250df,color:#8250df
+    classDef codex fill:#eaeef2,stroke:#57606a,color:#57606a
+    classDef pi fill:#ddf4ff,stroke:#0969da,color:#0969da
+    classDef opencode fill:#fff1e5,stroke:#bc4c00,color:#bc4c00
+    classDef relay fill:#dafbe1,stroke:#1a7f37,color:#1a7f37
+    classDef store fill:#fff8c5,stroke:#9a6700,color:#9a6700
 ```
+
+| Piece  | Path                            | Notes                                     |
+| ------ | ------------------------------- | ----------------------------------------- |
+| socket | `$RUNTIME/mz-relay/relayd.sock` | owner-only                                |
+| roster | `$CONFIG/mz-relay/roster.toml`  | reloaded when its mtime changes           |
+| policy | inside relayd                   | allowed routes, hop budget, caps and hold |
+| store  | `$STATE/mz-relay/relay.db`      | SQLite in WAL mode                        |
+
+| Harness  | Wake-up                                                                                      | Confirmed by      |
+| -------- | -------------------------------------------------------------------------------------------- | ----------------- |
+| Claude   | a frame to the session's inbox socket; fallback: the `asyncRewake` waiter leases the message | the transcript    |
+| Codex    | `codex queue --thread <id> --message <text>`                                                 | the rollout file  |
+| Pi       | `{"op":"deliver"}` to `$RUNTIME/mz-relay/pi-<pid>.sock`                                      | the adapter's ack |
+| OpenCode | `{"op":"deliver"}` to `$RUNTIME/mz-relay/oc-<pid>.sock`                                      | the adapter's ack |
 
 `relayd` is the only place where policy lives, so an old or modified client cannot bypass it. State survives a restart, and retries continue after the sender exits. `relayd` starts on demand, on the first command that needs it, and exits after 600 s without connections (`mz-relay daemon --idle-exit-s N` changes that for a foreground daemon).
 
@@ -108,7 +111,10 @@ The agent-facing tools are `send`, `inbox`, `ack` and `peers`. Claude, Codex and
 | Pi       | 1.5.2   |
 | OpenCode | 1.19.5  |
 
-Native Claude delivery needs Claude 2.1.322 or newer. An older session falls back to the waiter. Runtime requirements: Linux, Python 3.12 or newer with the standard library only. The launcher `plugins/mz-relay/bin/mz-relay` tries `$MZ_RELAY_PYTHON`, then `python3.14`, `python3.13`, `python3.12` and `python3`, and uses the first one that is 3.12 or newer. The TS adapters have no npm dependencies.
+> [!NOTE]
+> Native Claude delivery needs Claude 2.1.322 or newer. An older session falls back to the waiter.
+
+Runtime requirements: Linux, Python 3.12 or newer with the standard library only. The launcher `plugins/mz-relay/bin/mz-relay` tries `$MZ_RELAY_PYTHON`, then `python3.14`, `python3.13`, `python3.12` and `python3`, and uses the first one that is 3.12 or newer. The TS adapters have no npm dependencies.
 
 ## Install
 
@@ -140,9 +146,11 @@ Prints a `[mcp_servers.mz-relay]` table for `<CODEX_HOME>/config.toml`. Paste it
 
 The name must equal the roster's `codex_thread`. relayd resolves the name to the thread id in `session_index.jsonl` and queues by id, which reaches the thread before its first turn, with or without the app-server daemon, and when Codex was started with `-c` (tested on Codex 0.169.0). A hand-typed `codex queue --thread <name>` looks the name up among active sessions instead, and a thread with no turn yet is not one (`No active session found`). Delivery goes to the open TUI thread, so the thread must be running.
 
-Codex 0.168 and newer start MCP servers in a shared `codex app-server` daemon (feature `daemon_auto_start`, on by default) rather than in the TUI. The daemon runs under `systemd --user` and never sees the shell that started the TUI. With the default paths that makes no difference. A custom `MZ_RELAY_HOME` or XDG directory reaches the MCP server only when the TUI runs the server itself: start it with `codex --disable daemon_auto_start` and, when a daemon is already running, pick `Run without daemon this time`. `Restart with these settings` changes the shared daemon for every Codex client. The demo and `make live-codex` start Codex this way.
+> [!IMPORTANT]
+> Codex 0.168 and newer start MCP servers in a shared `codex app-server` daemon (feature `daemon_auto_start`, on by default) rather than in the TUI. The daemon runs under `systemd --user` and never sees the shell that started the TUI. With the default paths that makes no difference. A custom `MZ_RELAY_HOME` or XDG directory reaches the MCP server only when the TUI runs the server itself: start it with `codex --disable daemon_auto_start` and, when a daemon is already running, pick `Run without daemon this time`. `Restart with these settings` changes the shared daemon for every Codex client. The demo and `make live-codex` start Codex this way.
 
-A first start in a folder Codex does not trust can stop at a trust prompt (seen in the demo's workdir), and changed hooks stop at a hook review. Answer both in the TUI before `/rename`.
+> [!TIP]
+> A first start in a folder Codex does not trust can stop at a trust prompt (seen in the demo's workdir), and changed hooks stop at a hook review. Answer both in the TUI before `/rename`.
 
 ### Pi
 
@@ -319,7 +327,8 @@ approved 01J...
 
 `approve`, `deny` and `context extend` refuse to run (exit 2, `approve, deny and context extend must be run by the user in a terminal, not by an agent`) when stdin is not a terminal or an agent marker is in the environment: `CLAUDECODE`, `CLAUDE_CODE_MESSAGING_SOCKET`, `CODEX_THREAD_ID`, `OPENCODE`, `PI_CODING_AGENT`. Each marker was seen in the shell environment of its real harness (Claude 2.1.325, Codex 0.169.0, OpenCode 1.19.5, Pi 1.5.2).
 
-This is a speed bump, not a lock. An agent with a shell under the same OS user can fake a terminal, for example with `script -qc 'mz-relay approve <id>' /dev/null`. It stops accidents and prompt-injected one-liners. relayd itself accepts `decide` and `context_extend` only from a CLI connection, so an MCP or adapter client cannot send them by mistake. Decide the hold default with that in mind.
+> [!WARNING]
+> This is a speed bump, not a lock. An agent with a shell under the same OS user can fake a terminal, for example with `script -qc 'mz-relay approve <id>' /dev/null`. It stops accidents and prompt-injected one-liners. relayd itself accepts `decide` and `context_extend` only from a CLI connection, so an MCP or adapter client cannot send them by mistake. Decide the hold default with that in mind.
 
 Exit codes of the CLI: 0 ok, 1 relay error or not approved, 2 usage or config error or refusal, 3 relayd not running (for commands that never start it: `status`, `held`, `approve`, `deny`, `log`, `stop`).
 
@@ -358,12 +367,19 @@ $ mz-relay log --context 01J... --limit 20
 
 `tools = "read_only"` in the roster limits what an agent may do while it serves a peer. It is best-effort per harness: it prevents accidents with weak or local models and does not contain a hostile agent. A user's own turns are not limited, except where noted in the residual column.
 
-| Harness  | Restricted window                                                                                 | Mechanism                                                                                                                                         | Lifts                                                                                                                   | Residual                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| -------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Claude   | turns containing an mz-relay peer line, or a rewake marker                                        | `PreToolUse` hook on every tool. It allows only `Read`, `Glob`, `Grep`, `LS`, `WebSearch`, `TodoWrite`, `ToolSearch` and mz-relay's own MCP tools | `Stop` records the turn end and deletes the marker once an assistant line follows it. Any human prompt lifts it at once | Read-only deliveries wait while the session is busy (native path: deferred, rewake path: the waiter leases only while idle). A peer post rarely joins a user turn. If one does, the rest of that user turn is read-only until the user types. An async `Stop` that starts after the next peer turn has already written an assistant line records a turn end past that peer line, so that turn runs ungated (UNTESTED live: a full fix needs a turn id from Claude). In an SDK-driven session (`claude -p`) only `Stop` lifts the gate |
-| Pi       | from the first `context` event whose latest prompt is an mz-relay custom message marked read-only | `tool_call` allowlist: `read`, `grep`, `find`, `ls` and the four `mz_relay_*` tools                                                               | a `context` event whose latest prompt is a user message, or `agent_settled`                                             | `message_start` is documented only for user, assistant and tool-result messages, so it is not used. `live_pi` shows `context` firing for a follow-up that lands during a user run (Pi 1.5.2)                                                                                                                                                                                                                                                                                                                                          |
-| OpenCode | the peer message's own prompt                                                                     | per-message agent `mz-relay-peer` with deny permissions                                                                                           | per message                                                                                                             | none known                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| Codex    | not per turn                                                                                      | `doctor` checks `sandbox_mode = "read-only"` in the agent's `config.toml`                                                                         | none                                                                                                                    | all turns are limited only if the user set the sandbox. `doctor` checks the top-level `sandbox_mode` key and warns about each `<name>.config.toml` profile that sets another mode, since `codex --profile <name>` applies it on top. A trusted project's `.codex/config.toml` can override it too and is not checked                                                                                                                                                                                                                  |
+| Harness  | Restricted window                                                                                 | Mechanism                                                                                                                                         | Lifts                                                                                                                   |
+| -------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Claude   | turns containing an mz-relay peer line, or a rewake marker                                        | `PreToolUse` hook on every tool. It allows only `Read`, `Glob`, `Grep`, `LS`, `WebSearch`, `TodoWrite`, `ToolSearch` and mz-relay's own MCP tools | `Stop` records the turn end and deletes the marker once an assistant line follows it. Any human prompt lifts it at once |
+| Pi       | from the first `context` event whose latest prompt is an mz-relay custom message marked read-only | `tool_call` allowlist: `read`, `grep`, `find`, `ls` and the four `mz_relay_*` tools                                                               | a `context` event whose latest prompt is a user message, or `agent_settled`                                             |
+| OpenCode | the peer message's own prompt                                                                     | per-message agent `mz-relay-peer` with deny permissions                                                                                           | per message                                                                                                             |
+| Codex    | not per turn                                                                                      | `doctor` checks `sandbox_mode = "read-only"` in the agent's `config.toml`                                                                         | none                                                                                                                    |
+
+What each mechanism leaves open:
+
+- **Claude.** Read-only deliveries wait while the session is busy (native path: deferred, rewake path: the waiter leases only while idle). A peer post rarely joins a user turn. If one does, the rest of that user turn is read-only until the user types. An async `Stop` that starts after the next peer turn has already written an assistant line records a turn end past that peer line, so that turn runs ungated (UNTESTED live: a full fix needs a turn id from Claude). In an SDK-driven session (`claude -p`) only `Stop` lifts the gate.
+- **Pi.** `message_start` is documented only for user, assistant and tool-result messages, so it is not used. `live_pi` shows `context` firing for a follow-up that lands during a user run (Pi 1.5.2).
+- **OpenCode.** None known.
+- **Codex.** All turns are limited only if the user set the sandbox. `doctor` checks the top-level `sandbox_mode` key and warns about each `<name>.config.toml` profile that sets another mode, since `codex --profile <name>` applies it on top. A trusted project's `.codex/config.toml` can override it too and is not checked.
 
 A blocked Claude tool call returns: `mz-relay: <tool> is blocked because a peer message is part of this turn and your roster role is read_only. The limit lifts when the turn ends or your user types.` The agent's brief carries one line that states its harness's window.
 
@@ -379,7 +395,9 @@ mz-relay is built for one person's agents on one machine, under one OS user.
 - **`codex queue` carries the text in argv.** While it runs, the message text is visible in `/proc/<pid>/cmdline` to processes of the same user.
 - **A Codex queue timeout can duplicate a message.** If `codex queue` times out after Codex took the text, the retry delivers it again.
 - **A peer message is never user approval.** The header says so, the brief says so, and `approve` refuses agents (see the speed bump above).
-- **Data protection.** Relaying corporate code to an agent on a personal account moves it out of the commercial-account data terms. Per the project research, consumer Claude accounts (Pro, Max) may train on data and keep it up to five years when opted in, while commercial accounts do not train on customer content. Whether a relay is allowed is an employer-policy question. This note has not been re-checked against Anthropic's current terms (UNTESTED). The hold default exists for this route.
+
+> [!CAUTION]
+> **Data protection.** Relaying corporate code to an agent on a personal account moves it out of the commercial-account data terms. Per the project research, consumer Claude accounts (Pro, Max) may train on data and keep it up to five years when opted in, while commercial accounts do not train on customer content. Whether a relay is allowed is an employer-policy question. This note has not been re-checked against Anthropic's current terms (UNTESTED). The hold default exists for this route.
 
 ## Demo
 
@@ -401,7 +419,12 @@ The script:
 1. prints every held message once with its `mz-relay approve <id>` command (the demo never approves, so with the hold on, run it in another terminal).
 1. exits 0 once the kickoff context has a `done` and `pytest` passes in the workdir, and exits 1 on timeout with the log printed.
 
-It refuses to start when a tmux session `mzr-demo` exists on that server. It never approves or denies a held message itself: it prints the `approve` command for each one. On exit it prints the commands that stop the session and the relay. The renamed Codex thread stays in `CODEX_HOME`. A `relay_name` plugin option set in a real account overrides the window's `MZ_RELAY_NAME`. The live check is `make live-demo` with `MZ_RELAY_LIVE_DEMO="<architect cfg>:<builder cfg>:<codex home>"`. It runs the demo with `--no-hold --timeout 900` and asserts exit 0, a builder to reviewer request, a final `done`, at most 20 messages and a hop of at most 4. It passed against Claude 2.1.325 and Codex 0.169.0.
+It refuses to start when a tmux session `mzr-demo` exists on that server. It never approves or denies a held message itself: it prints the `approve` command for each one. On exit it prints the commands that stop the session and the relay. The renamed Codex thread stays in `CODEX_HOME`.
+
+> [!NOTE]
+> A `relay_name` plugin option set in a real account overrides the window's `MZ_RELAY_NAME`.
+
+The live check is `make live-demo` with `MZ_RELAY_LIVE_DEMO="<architect cfg>:<builder cfg>:<codex home>"`. It runs the demo with `--no-hold --timeout 900` and asserts exit 0, a builder to reviewer request, a final `done`, at most 20 messages and a hop of at most 4. It passed against Claude 2.1.325 and Codex 0.169.0.
 
 ## Troubleshooting
 
@@ -428,7 +451,10 @@ Logs are `relayd.log` and `hooks.log` in the state directory (`~/.local/state/mz
 
 ## UNTESTED
 
-Every live test and the demo passed on 2026-11-14 against the [tested versions](#tested-versions). Two claims remain open:
+> [!NOTE]
+> Every live test and the demo passed on 2026-11-14 against the [tested versions](#tested-versions).
+
+Two claims remain open:
 
 - **Late async `Stop` on Claude.** An async `Stop` that starts after the next peer turn has already written an assistant line leaves that peer turn ungated (see [Read-only roles](#read-only-roles)). No live test reproduces the timing, and a full fix needs a turn id from Claude.
 - **Account data terms.** The consumer and commercial data terms in the [threat model](#threat-model) come from the project research and have not been re-checked against Anthropic's current terms.
@@ -448,4 +474,4 @@ Layout: `.claude-plugin/marketplace.json` points at `plugins/mz-relay/`, which h
 
 ## License
 
-MIT.
+[MIT](LICENSE)

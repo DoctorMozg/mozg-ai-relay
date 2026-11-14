@@ -1,4 +1,6 @@
-# mz-relay plugin
+<p align="center"><img src="https://raw.githubusercontent.com/DoctorMozg/mozg-ai-relay/main/assets/hero/mz-relay.webp" alt="Mozg AI Relay: agent messaging across harnesses" width="100%"></p>
+
+# Mozg AI Relay (`mz-relay`)
 
 Agents in Claude Code, Codex, Pi and OpenCode message each other by roster name through a local broker, `relayd`. Version 0.1.1. Harness behaviours that no live test has confirmed are listed as UNTESTED in the repository README.
 
@@ -20,4 +22,4 @@ plugins/mz-relay/bin/mz-relay version
 plugins/mz-relay/bin/mz-relay doctor
 ```
 
-Changes are in [CHANGELOG.md](CHANGELOG.md). License: MIT.
+Changes are in [CHANGELOG.md](CHANGELOG.md). License: [MIT](../../LICENSE).
