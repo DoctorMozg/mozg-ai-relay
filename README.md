@@ -3,7 +3,7 @@
 # mozg-ai-relay
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.0-blue" alt="version 0.1.0">
+  <img src="https://img.shields.io/badge/version-0.1.1-blue" alt="version 0.1.1">
   <img src="https://img.shields.io/badge/python-3.12%2B-3776ab" alt="Python 3.12 or newer">
   <img src="https://img.shields.io/badge/platform-Linux-lightgrey" alt="Linux">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license">
@@ -327,7 +327,7 @@ Exit codes of the CLI: 0 ok, 1 relay error or not approved, 2 usage or config er
 
 ```console
 $ mz-relay status
-relayd pid 4242, protocol 1, version 0.1.0, 3 connection(s)
+relayd pid 4242, protocol 1, version 0.1.1, 3 connection(s)
 db: /home/u/.local/state/mz-relay/relay.db
 roster: /home/u/.config/mz-relay/roster.toml
 agents:

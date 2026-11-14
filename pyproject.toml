@@ -1,6 +1,6 @@
 [project]
 name = "mz-relay-tooling"
-version = "0.1.0"
+version = "0.1.1"
 description = "Shared tooling and tests for the mz-relay plugin"
 requires-python = ">=3.12"
 dependencies = []

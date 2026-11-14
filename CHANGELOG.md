@@ -4,6 +4,8 @@ All notable changes are listed here. The format follows Keep a Changelog, and ve
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-14
+
 ### Added
 
 - `mz-relay approve|deny <id> --source NAME` picks one of several held messages that share an id; without it, `approve` names the other senders.
