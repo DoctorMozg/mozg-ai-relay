@@ -158,7 +158,7 @@ Copies `adapters/pi/mz_relay.ts` to `~/.pi/agent/extensions/mz-relay/index.ts` a
 mz-relay install opencode [--dest FILE] [--force]
 ```
 
-Copies `adapters/opencode/mz_relay.ts` to `~/.config/opencode/plugins/mz-relay.ts`, or under `$XDG_CONFIG_HOME/opencode/` when that is set. The plugin injects the MCP entry and the read-only `mz-relay-peer` agent through OpenCode's `config` hook. Whether OpenCode applies that hook is UNTESTED. The fallback is to merge the printed entries into `opencode.json` by hand:
+Copies `adapters/opencode/mz_relay.ts` to `~/.config/opencode/plugins/mz-relay.ts`, or under `$XDG_CONFIG_HOME/opencode/` when that is set. The plugin injects the MCP entry and the read-only `mz-relay-peer` agent through OpenCode's `config` hook, which `make live-opencode` exercises (OpenCode 1.19.5). The fallback is to merge the printed entries into `opencode.json` by hand:
 
 ```bash
 mz-relay snippet opencode --name helper
@@ -317,7 +317,7 @@ approved 01J...
 
 `approve` and `deny [--reason T]` show the route and the first 200 characters of the body and ask on `/dev/tty`. `y` or `yes` confirms. Anything else prints `not approved` or `not denied` and exits 1. Approving queues the message for delivery, and denying tells the sender through a notice. Ids are unique per sender only. When held messages from several senders share an id, `approve` names the other senders, and `--source NAME` picks one.
 
-`approve`, `deny` and `context extend` refuse to run (exit 2, `approve, deny and context extend must be run by the user in a terminal, not by an agent`) when stdin is not a terminal or an agent marker is in the environment: `CLAUDECODE`, `CLAUDE_CODE_MESSAGING_SOCKET`, `CODEX_THREAD_ID`, `OPENCODE`, `PI_CODING_AGENT`. Only the two `CLAUDE*` markers are verified against a real harness. The other three are UNTESTED.
+`approve`, `deny` and `context extend` refuse to run (exit 2, `approve, deny and context extend must be run by the user in a terminal, not by an agent`) when stdin is not a terminal or an agent marker is in the environment: `CLAUDECODE`, `CLAUDE_CODE_MESSAGING_SOCKET`, `CODEX_THREAD_ID`, `OPENCODE`, `PI_CODING_AGENT`. Each marker was seen in the shell environment of its real harness (Claude 2.1.325, Codex 0.169.0, OpenCode 1.19.5, Pi 1.5.2).
 
 This is a speed bump, not a lock. An agent with a shell under the same OS user can fake a terminal, for example with `script -qc 'mz-relay approve <id>' /dev/null`. It stops accidents and prompt-injected one-liners. relayd itself accepts `decide` and `context_extend` only from a CLI connection, so an MCP or adapter client cannot send them by mistake. Decide the hold default with that in mind.
 
@@ -374,7 +374,7 @@ mz-relay is built for one person's agents on one machine, under one OS user.
 - **Same OS user, no isolation.** relayd accepts connections only from its own uid (`SO_PEERCRED`) and keeps its socket and directories owner-only (0600 and 0700), which keeps other users out. Every agent and every local process of that user can read the database and talk to the socket.
 - **Tokens are not secrets from local processes.** A registration token (32 hex characters) identifies a session to relayd and is stored in the database. Any process of the same user can read it and send as that agent.
 - **`CLAUDE_CODE_MESSAGING_TOKEN` is never read.** The Claude adapter uses the session's `CLAUDE_CODE_MESSAGING_SOCKET` path only.
-- **Bodies are never logged.** No log carries message bodies or tokens: relayd.log, hooks.log and the adapter logs. One caveat: a failed `codex queue` puts the tail of its stderr in the delivery reason, and that would include the message if Codex echoes it (UNTESTED). relayd's daemon environment is an allowlist (`PATH`, `LANG`, `TZ`, the XDG variables, `LC_*`, `MZ_RELAY_*`), so agent-session variables do not leak into it.
+- **Bodies are never logged.** No log carries message bodies or tokens: relayd.log, hooks.log and the adapter logs. One caveat: a failed `codex queue` puts the tail of its stderr in the delivery reason and the adapter log. On Codex 0.169.0 the failures relayd can meet (unknown thread id, no active session) do not echo the message, and the delivered text starts with the `[mz-relay]` header, so Codex never parses the body as an option. A future Codex error that echoes its input would land in that reason. relayd's daemon environment is an allowlist (`PATH`, `LANG`, `TZ`, the XDG variables, `LC_*`, `MZ_RELAY_*`), so agent-session variables do not leak into it.
 - **`held` and `log` show previews** (200 and 60 characters) to any local process of the user. Holding gates delivery, not reading.
 - **`codex queue` carries the text in argv.** While it runs, the message text is visible in `/proc/<pid>/cmdline` to processes of the same user.
 - **A Codex queue timeout can duplicate a message.** If `codex queue` times out after Codex took the text, the retry delivers it again.
@@ -428,7 +428,10 @@ Logs are `relayd.log` and `hooks.log` in the state directory (`~/.local/state/mz
 
 ## UNTESTED
 
-Every live test and the demo passed on 2026-11-14 against the [tested versions](#tested-versions), and no behaviour in this README rests on a manual probe alone.
+Every live test and the demo passed on 2026-11-14 against the [tested versions](#tested-versions). Two claims remain open:
+
+- **Late async `Stop` on Claude.** An async `Stop` that starts after the next peer turn has already written an assistant line leaves that peer turn ungated (see [Read-only roles](#read-only-roles)). No live test reproduces the timing, and a full fix needs a turn id from Claude.
+- **Account data terms.** The consumer and commercial data terms in the [threat model](#threat-model) come from the project research and have not been re-checked against Anthropic's current terms.
 
 ## Development
 
