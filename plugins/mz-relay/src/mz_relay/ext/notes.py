@@ -7,14 +7,23 @@ import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
 
-from mz_relay.ext.board import Board, _Args, _object_schema
-from mz_relay.extensions import ExtensionError, ExtTool, HumanAction, HumanCall, ToolCall
+from mz_relay.ext import board_data
+from mz_relay.extensions import (
+    ExtArgs,
+    ExtensionError,
+    ExtTool,
+    HumanAction,
+    HumanCall,
+    ToolCall,
+    object_schema,
+)
 from mz_relay.store import Event
 
 log = logging.getLogger(__name__)
 
 SEARCH_LIMIT = 20
 KINDS = ("decision", "note")
+LIMITS = {"title": 200, "body": 8000}
 SCHEMA = (
     """CREATE TABLE notes(
         id INTEGER PRIMARY KEY, project TEXT NOT NULL, author TEXT NOT NULL, kind TEXT NOT NULL,
@@ -41,10 +50,6 @@ class Notes:
     name = "notes"
     schema_version = 1
 
-    def __init__(self) -> None:
-        # One access rule for both extensions: the board's, read from its own tables.
-        self._board = Board()
-
     def migrate(self, db: sqlite3.Connection, from_version: int) -> None:
         if from_version < 1:
             for statement in SCHEMA:
@@ -55,7 +60,7 @@ class Notes:
             ExtTool(
                 "add",
                 "Record a decision or a note in a project's log, for agents who come later.",
-                _object_schema(
+                object_schema(
                     {
                         "project": {"type": "string"},
                         "title": {"type": "string"},
@@ -70,7 +75,7 @@ class Notes:
             ExtTool(
                 "search",
                 "Search a project's log by words in the title or body; newest first.",
-                _object_schema(
+                object_schema(
                     {"project": {"type": "string"}, "query": {"type": "string"}}, ["project"]
                 ),
                 mutates=False,
@@ -88,7 +93,7 @@ class Notes:
         return None
 
     def add(self, call: ToolCall) -> dict[str, object]:
-        args = _Args(call.args, {"project", "title", "body", "kind"})
+        args = ExtArgs(call.args, {"project", "title", "body", "kind"}, LIMITS)
         project = args.text("project")
         self._require(call, project, "write")
         # One statement, no BEGIN IMMEDIATE: that would also write-lock the attached board.db.
@@ -108,7 +113,7 @@ class Notes:
         return {"text": f"recorded note {note_id} in {project}", "id": note_id}
 
     def search(self, call: ToolCall) -> dict[str, object]:
-        args = _Args(call.args, {"project", "query"})
+        args = ExtArgs(call.args, {"project", "query"}, LIMITS)
         project, query = args.text("project"), args.optional_text("query")
         self._require(call, project, "read")
         rows = self._rows(call.db, project, query)
@@ -120,7 +125,7 @@ class Notes:
         return {"text": f"{project} notes:\n" + "\n".join(lines)}
 
     def list_notes(self, call: HumanCall) -> dict[str, object]:
-        args = _Args(call.args, {"project", "query"})
+        args = ExtArgs(call.args, {"project", "query"}, LIMITS)
         project, query = args.optional_text("project"), args.optional_text("query")
         if not _attach_board(call.db):
             return {"text": NO_BOARD, "projects": [], "notes": []}
@@ -142,9 +147,9 @@ class Notes:
     def _require(self, call: ToolCall, project: str, need: str) -> None:
         if not _attach_board(call.db):
             raise ExtensionError("not_found", NO_BOARD)
-        # The board's queries name projects and grants unqualified; notes.db has neither,
-        # so they resolve to the attached board.db.
-        self._board._require(call.db, call.caller, project, need)
+        # One access rule for both extensions. The board's queries name projects and grants
+        # unqualified; notes.db has neither, so they resolve to the attached board.db.
+        board_data.require(call.db, call.caller, project, need)
 
     @staticmethod
     def _rows(db: sqlite3.Connection, project: str | None, query: str | None) -> list[sqlite3.Row]:

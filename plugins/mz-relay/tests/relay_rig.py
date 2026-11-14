@@ -540,6 +540,7 @@ def running_daemon(
     adapters: Mapping[Harness, HarnessAdapter] | None = None,
     *,
     roster_text: str | None = None,
+    clock: Clock | None = None,
 ) -> Iterator[RelayDaemon]:
     """An in-process relayd on `paths` with `roster_text` (default the pull roster)."""
     from mz_relay.clock import SystemClock
@@ -548,7 +549,8 @@ def running_daemon(
     paths.ensure_dirs()
     text = pull_roster(paths.config_dir) if roster_text is None else roster_text
     paths.roster.write_text(text, encoding="utf-8")
-    daemon = RelayDaemon(DaemonConfig(paths=paths, clock=SystemClock()), dict(adapters or {}))
+    cfg = DaemonConfig(paths=paths, clock=clock or SystemClock())
+    daemon = RelayDaemon(cfg, dict(adapters or {}))
     runner = InThread(daemon.serve_forever)
     try:
         listening = wait_until(lambda: runner.done() or socket_accepts(paths.socket), PROC_WAIT_S)

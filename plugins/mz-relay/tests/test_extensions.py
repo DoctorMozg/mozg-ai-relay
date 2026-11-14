@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import subprocess
 from collections.abc import Iterator, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
@@ -23,7 +25,7 @@ from mz_relay.extensions import (
 from mz_relay.presence import Registered
 from mz_relay.roster import parse_roster
 from mz_relay.store import Event
-from relay_rig import ServiceRig, pull_roster
+from relay_rig import BIN, PROC_WAIT_S, McpProc, ServiceRig, paths_in, pull_roster, stop_daemon
 
 READER = """
 [agents.dave]
@@ -324,3 +326,48 @@ class TestRosterAndDiscovery:
 
         assert discover(["nosuchext"]) == []
         assert "nosuchext" in caplog.text
+
+
+CORE_TOOLS = {"send", "inbox", "ack", "peers"}
+BOARD_TOOLS = {"board_list", "board_get", "board_post", "board_claim", "board_update"}
+
+
+def tool_names(session: McpProc) -> set[str]:
+    reply = session.request("tools/list", {})
+    return {tool["name"] for tool in reply["result"]["tools"]}
+
+
+class TestEnablingOnARunningSetup:
+    """The README's steps to enable an extension, run against real MCP servers and relayd."""
+
+    def test_tools_appear_after_relayd_restarts_and_only_in_new_sessions(
+        self, relay_home: Path, relay_env: dict[str, str]
+    ) -> None:
+        paths = paths_in(relay_home)
+        paths.roster.write_text(pull_roster(relay_home), encoding="utf-8")
+        with ExitStack() as stack:
+            stack.callback(stop_daemon, paths.socket)
+
+            def session(name: str) -> McpProc:
+                proc = McpProc(name, relay_env, cwd=relay_home, log=relay_home / f"{name}.log")
+                stack.callback(proc.close)
+                proc.initialize()
+                return proc
+
+            first = session("alice")
+            assert tool_names(first) == CORE_TOOLS
+
+            enabled = pull_roster(relay_home) + '\n[extensions]\nenabled = ["board"]\n'
+            paths.roster.write_text(enabled, encoding="utf-8")
+            # relayd opened its extensions at start, so a new session still gets none.
+            assert tool_names(session("bob")) == CORE_TOOLS
+
+            stop = subprocess.run(
+                [str(BIN), "stop"], env=relay_env, capture_output=True, timeout=PROC_WAIT_S
+            )
+            assert stop.returncode == 0, stop.stderr
+
+            assert tool_names(session("carol")) >= BOARD_TOOLS
+            # The list is fixed at initialize; the old session keeps working without the board.
+            assert tool_names(first) == CORE_TOOLS
+            assert "carol" in first.tool("peers")

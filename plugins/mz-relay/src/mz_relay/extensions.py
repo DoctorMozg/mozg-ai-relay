@@ -51,6 +51,81 @@ class HumanCall:
     db: sqlite3.Connection
 
 
+def object_schema(properties: dict[str, object], required: Sequence[str] = ()) -> dict[str, object]:
+    """A closed JSON object schema for a tool's input."""
+    schema: dict[str, object] = {
+        "type": "object",
+        "properties": properties,
+        "additionalProperties": False,
+    }
+    if required:
+        schema["required"] = list(required)
+    return schema
+
+
+class ExtArgs:
+    """One call's arguments; a bad one is invalid_args naming the field."""
+
+    def __init__(
+        self,
+        args: Mapping[str, object],
+        allowed: set[str],
+        limits: Mapping[str, int] | None = None,
+    ) -> None:
+        unknown = sorted(set(args) - allowed)
+        if unknown:
+            raise ExtensionError("invalid_args", f"unknown arguments: {', '.join(unknown)}")
+        self.args = args
+        self.limits: Mapping[str, int] = limits or {}
+
+    def text(self, name: str) -> str:
+        value = self.optional_text(name)
+        if value is None:
+            raise ExtensionError("invalid_args", f"{name} is required")
+        return value
+
+    def optional_text(self, name: str) -> str | None:
+        value = self.args.get(name)
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value.strip():
+            raise ExtensionError("invalid_args", f"{name} must be a non-empty string")
+        limit = self.limits.get(name)
+        if limit is not None and len(value) > limit:
+            raise ExtensionError("invalid_args", f"{name} has {len(value)} characters, max {limit}")
+        return value.strip()
+
+    def choice(self, name: str, allowed: Sequence[str], default: str | None = None) -> str:
+        value = self.args.get(name, default)
+        if value not in allowed:
+            raise ExtensionError(
+                "invalid_args", f"{name} must be one of {', '.join(allowed)}, got {value!r}"
+            )
+        return str(value)
+
+    def optional_choice(self, name: str, allowed: Sequence[str]) -> str | None:
+        return None if self.args.get(name) is None else self.choice(name, allowed)
+
+    def integer(self, name: str, default: int, low: int, high: int) -> int:
+        value = self.args.get(name, default)
+        if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+            raise ExtensionError("invalid_args", f"{name} must be an integer in {low}..{high}")
+        return value
+
+    def strings(self, name: str) -> list[str]:
+        """A list of strings, duplicates dropped in order."""
+        value = self.args.get(name, [])
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise ExtensionError("invalid_args", f"{name} must be a list of strings")
+        return list(dict.fromkeys(value))
+
+    def flag(self, name: str) -> bool:
+        value = self.args.get(name, False)
+        if not isinstance(value, bool):
+            raise ExtensionError("invalid_args", f"{name} must be true or false")
+        return value
+
+
 @dataclass(frozen=True)
 class ExtTool:
     name: str

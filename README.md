@@ -601,14 +601,13 @@ Logs are `relayd.log` and `hooks.log` in the state directory (`~/.local/state/mz
 > [!NOTE]
 > Every live test and the demo passed on 2026-11-14 against the [tested versions](#tested-versions).
 
-Six claims remain open:
+Five claims remain open:
 
 - **Late async `Stop` on Claude.** An async `Stop` that starts after the next peer turn has already written an assistant line leaves that peer turn ungated (see [Read-only roles](#read-only-roles)). No live test reproduces the timing, and a full fix needs a turn id from Claude.
 - **Account data terms.** The consumer and commercial data terms in the [threat model](#threat-model) come from the project research and have not been re-checked against Anthropic's current terms.
 - **Web UI launch and reconnect.** `tests/test_ui_server.py` covers the HTTP layer and `node --test` covers the front end's pure helpers. A manual pass in headless Chrome on 2026-11-14 checked sign-in, the live stream, Approve, the composer, the board and notes tabs and dark mode, but no automated test drives the page. The browser launch from `mz-relay ui` and the live stream's reconnect have not been run.
 - **Extension tools outside Claude.** `make live-board` passed on two Claude accounts on 2026-11-14. Codex, Pi and OpenCode expose the tools through the same registration path, which only unit tests cover (Pi: `adapters/pi/mz_relay_tools.test.ts`).
-- **Enabling an extension on a running setup.** The code implies that relayd must be stopped and the agent sessions restarted (relayd opens extensions once at start, the MCP server lists tools once at `initialize`). It was not run end to end.
-- **Board lease and review across agents.** `tests/test_board.py` covers the 30-minute lease reclaim and the reviewer rule with a fake clock. No 30-minute live run exists.
+- **Board lease in real time.** `tests/test_board.py` covers the 30-minute reclaim with a fake clock, also through a running relayd's event pump. No live run waits out a lease. The reviewer rule passed live in `make live-board`.
 
 ## Writing an extension
 
@@ -657,6 +656,7 @@ Enable it with `enabled = ["counter"]`. The agent tool is `counter_hit`. The ter
 
 - `migrate(db, from_version)` runs in one transaction, from the stored `PRAGMA user_version` up to `schema_version`. Every handler returns a dict with a string `text`, or the call fails with `ext_failed`. Raise `ExtensionError(code, message)` for refusals an agent should read.
 - `name` matches `^[a-z][a-z0-9]{0,15}$`. A tool name matches `^[a-z][a-z0-9_]{0,31}$`. `mutates=True` hides the tool from `read_only` agents.
+- `extensions.py` also has `object_schema(properties, required)` for a closed input schema and `ExtArgs(call.args, allowed, limits)`, which reads typed arguments and raises `invalid_args` naming a bad or unknown one. The board and the notes use both.
 - Calls into one extension run one at a time under a lock, on a connection with `isolation_level=None`, so handlers open their own transactions (the board uses `BEGIN IMMEDIATE`).
 - A `HumanAction` with `mutates=False` leaves no event, so a UI that reloads on events does not loop.
 

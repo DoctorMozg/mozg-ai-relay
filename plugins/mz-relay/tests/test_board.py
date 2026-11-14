@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterator
-from contextlib import closing
+from contextlib import ExitStack, closing
 from functools import partial
 from pathlib import Path
 
@@ -13,10 +13,20 @@ from mz_relay.cli import Terminal, main
 from mz_relay.client import RelayClient
 from mz_relay.errors import RelayError
 from mz_relay.ext import board
-from mz_relay.ext.board import LEASE_S, Board
+from mz_relay.ext.board import Board
+from mz_relay.ext.board_data import LEASE_S
+from mz_relay.ids import new_id
 from mz_relay.paths import Paths
 from mz_relay.service import ConnState
-from relay_rig import InThread, ServiceRig, pull_roster, running_daemon
+from relay_rig import (
+    WAIT_S,
+    FakeClock,
+    InThread,
+    ServiceRig,
+    pull_roster,
+    running_daemon,
+    wait_until,
+)
 
 REVIEWER = """
 [agents.dave]
@@ -313,6 +323,51 @@ class TestInRelayd:
         assert [t["name"] for t in tools][:2] == ["board_list", "board_get"]
         assert posted["id"] == "web-1"
         assert (relay_paths.state_dir / "ext" / "board.db").exists()
+
+    def test_relayds_event_pump_reclaims_an_expired_claim_when_a_message_arrives(
+        self, relay_paths: Paths
+    ) -> None:
+        roster = pull_roster(relay_paths.config_dir) + '\n[extensions]\nenabled = ["board"]\n'
+        clock = FakeClock()
+        board_db = relay_paths.state_dir / "ext" / "board.db"
+
+        def query(db_path: Path, sql: str) -> object:
+            with closing(sqlite3.connect(db_path)) as db:
+                return db.execute(sql).fetchone()[0]
+
+        def pump_caught_up() -> bool:
+            head = query(relay_paths.state_dir / "relay.db", "SELECT max(seq) FROM events")
+            return head == query(board_db, "SELECT seq FROM mz_ext_cursor")
+
+        with running_daemon(relay_paths, roster_text=roster, clock=clock), ExitStack() as stack:
+            cli = stack.enter_context(closing(RelayClient(relay_paths.socket)))
+            cli.connect(client="cli")
+            args = {"name": "web", "default_access": "write"}
+            cli.call("ext_human", {"ext": "board", "action": "create_project", "args": args})
+            tokens = {}
+            for name in ("alice", "bob"):
+                agent = stack.enter_context(closing(RelayClient(relay_paths.socket)))
+                agent.connect(client="mcp")
+                where = {"harness": "opencode", "cwd": str(relay_paths.config_dir), "pid": 1}
+                tokens[name] = (agent, agent.call("register", {"name": name, **where})["token"])
+
+            def call(name: str, op: str, args: dict[str, object]) -> dict[str, object]:
+                agent, token = tokens[name]
+                reply: dict[str, object] = agent.call(op, {"token": token, **args})
+                return reply
+
+            post = {"project": "web", **TASK}
+            task = call("alice", "ext_call", {"tool": "board_post", "args": post})["id"]
+            call("bob", "ext_call", {"tool": "board_claim", "args": {"id": task}})
+            # The claim's own event must be handed over before the lease runs out.
+            assert wait_until(pump_caught_up, WAIT_S)
+            clock.advance(LEASE_S + 1)
+            assert query(board_db, f"SELECT state FROM tasks WHERE id = '{task}'") == "in_progress"
+
+            call("alice", "send", {"id": new_id(), "to": "bob", "kind": "inform", "body": "hi"})
+
+            reclaimed = f"SELECT state FROM tasks WHERE id = '{task}'"
+            assert wait_until(lambda: query(board_db, reclaimed) == "open", WAIT_S)
 
 
 class TestUserViews:
