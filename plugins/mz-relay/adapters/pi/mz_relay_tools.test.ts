@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
 import { FAKE_TOKEN, type Frame } from "../testing/fake_relayd.ts";
-import { PiRig, type PiRigOptions } from "../testing/fake_pi.ts";
+import { PiRig, type PiRigOptions, piMessage } from "../testing/fake_pi.ts";
 import { TEST_TIMEOUT, useRig } from "../testing/rig.ts";
 import mzRelay from "./mz_relay.ts";
 
@@ -205,5 +205,15 @@ describe("extension tools", () => {
   test("a malformed entry is skipped and the rest are added", TEST_TIMEOUT, async () => {
     const r = await rigWithTools([{ name: "board_get" }, BOARD_LIST]);
     assert.deepEqual(r.pi.tools.map((t) => t.name).filter((n) => !TOOL_NAMES.includes(n)), ["mz_relay_board_list"]);
+  });
+
+  // relayd already left mutating tools out of a read_only agent's ext_tools.
+  test("a read_only peer run may use registered extension tools and nothing unregistered", TEST_TIMEOUT, async () => {
+    const r = await rigWithTools([BOARD_LIST]);
+    await r.pi.context([piMessage.user(), piMessage.peer("m1", "read_only")]);
+
+    assert.equal(await r.pi.toolCall("mz_relay_board_list"), undefined);
+    assert.equal((await r.pi.toolCall("mz_relay_board_post"))?.block, true);
+    assert.equal((await r.pi.toolCall("board_list"))?.block, true);
   });
 });

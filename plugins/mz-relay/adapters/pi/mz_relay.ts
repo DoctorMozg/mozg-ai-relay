@@ -616,13 +616,16 @@ function latestPrompt(messages: unknown[]): unknown {
   return undefined;
 }
 
-// S10: a run whose latest prompt is a read_only peer message may only use READ_ONLY_ALLOWED.
+// S10: a run whose latest prompt is a read_only peer message may only use READ_ONLY_ALLOWED
+// and the extension tools relayd registered, which it already filtered for a read_only role.
 class ReadOnlyGate {
   peerRun = false;
   readonly log: AdapterLog | null;
+  readonly isExtensionTool: (toolName: string) => boolean;
 
-  constructor(log: AdapterLog | null) {
+  constructor(log: AdapterLog | null, isExtensionTool: (toolName: string) => boolean) {
     this.log = log;
+    this.isExtensionTool = isExtensionTool;
   }
 
   // A context with no prompt line (say, the peer message compacted away) says nothing about the run.
@@ -640,7 +643,7 @@ class ReadOnlyGate {
   }
 
   check(toolName: string): GateDecision | undefined {
-    if (!this.peerRun || READ_ONLY_ALLOWED.has(toolName)) return undefined;
+    if (!this.peerRun || READ_ONLY_ALLOWED.has(toolName) || this.isExtensionTool(toolName)) return undefined;
     this.log?.info(`blocked ${toolName} during a read_only peer run`);
     return { block: true, reason: peerOnlyReason(toolName) };
   }
@@ -675,6 +678,10 @@ class RelayTools {
   constructor(session: () => ToolSession | null, log: () => AdapterLog | null) {
     this.session = session;
     this.log = log;
+  }
+
+  hasExtension(toolName: string): boolean {
+    return this.extensionTools.has(toolName);
   }
 
   register(pi: PiApi): void {
@@ -758,10 +765,11 @@ class RelayTools {
   registerExtensions(pi: PiApi, specs: ExtToolSpec[]): void {
     const added: string[] = [];
     for (const spec of specs) {
-      if (this.extensionTools.has(spec.name)) continue;
-      this.extensionTools.add(spec.name);
+      const name = `mz_relay_${spec.name}`;
+      if (this.extensionTools.has(name)) continue;
+      this.extensionTools.add(name);
       pi.registerTool(
-        this.tool(`mz_relay_${spec.name}`, `mz-relay ${spec.name}`, spec.description, spec.inputSchema, "ext_call", (params) => ({
+        this.tool(name, `mz-relay ${spec.name}`, spec.description, spec.inputSchema, "ext_call", (params) => ({
           tool: spec.name,
           args: params,
         })),
@@ -837,7 +845,7 @@ class MzRelayExtension {
     }
     this.paths = paths;
     this.log = paths ? new AdapterLog(paths.adapterLog) : null;
-    this.gate = new ReadOnlyGate(this.log);
+    this.gate = new ReadOnlyGate(this.log, (toolName) => this.tools?.hasExtension(toolName) ?? false);
   }
 
   attach(): void {
