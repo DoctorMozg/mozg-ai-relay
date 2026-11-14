@@ -1,6 +1,7 @@
 """Live smoke: relayd queues a peer message into a real Codex thread and finds it in the rollout.
-Run by hand: MZ_RELAY_LIVE_CODEX_HOME=<codex home with the mz-relay snippet> uv run make live-codex
-Codex runs in that real CODEX_HOME; the test deletes the thread it renamed afterwards."""
+Run by hand: MZ_RELAY_LIVE_CODEX_HOME=<logged-in codex home> uv run make live-codex
+Codex runs in that real CODEX_HOME, with the mz-relay snippet passed as `-c` flags rather than
+written to its config.toml; the test deletes the thread it renamed afterwards."""
 
 from __future__ import annotations
 
@@ -27,6 +28,7 @@ from relay_rig import PLUGIN, paths_in, running_daemon, wait_until
 sys.path.insert(0, str(PLUGIN / "scripts"))
 
 from demo import CODEX_ARGV, CODEX_STARTUP_PROMPTS
+from mz_relay.install import MCP_SERVER_NAME, codex_snippet, toml_string
 
 # The TUI counts as ready once its screen stops changing for this long.
 TUI_QUIET_S = 3.0
@@ -34,18 +36,26 @@ TUI_QUIET_S = 3.0
 RENAME_PAUSE_S = 1.0
 ROLLOUT_S = 60.0
 HEADER = "[mz-relay] Peer message from architect"
+AGENT = "reviewer"
 
 
-def configured_name(codex_home: Path) -> str:
-    """The agent name the mz-relay snippet in config.toml gives; skips when it is not set up."""
-    config = codex_home / "config.toml"
-    if not config.is_file():
-        pytest.skip(f"{config} does not exist; paste `mz-relay snippet codex` into it")
-    server = tomllib.loads(config.read_text(encoding="utf-8")).get("mcp_servers", {})
-    name = server.get("mz-relay", {}).get("env", {}).get("MZ_RELAY_NAME")
-    if not isinstance(name, str) or not name:
-        pytest.skip(f"{config} has no [mcp_servers.mz-relay] with env MZ_RELAY_NAME")
-    return name
+def toml_value(value: object) -> str:
+    if isinstance(value, str):
+        return toml_string(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(toml_value(item) for item in value) + "]"
+    if isinstance(value, dict):
+        return "{ " + ", ".join(f"{k} = {toml_value(v)}" for k, v in value.items()) + " }"
+    raise TypeError(f"no TOML form for {type(value).__name__} in the snippet")
+
+
+def snippet_flags(name: str) -> list[str]:
+    """`codex -c` flags carrying `mz-relay snippet codex` for this run; config.toml stays as is."""
+    snippet = tomllib.loads(codex_snippet(PLUGIN / "bin" / "mz-relay", name))
+    flags: list[str] = []
+    for key, value in snippet["mcp_servers"][MCP_SERVER_NAME].items():
+        flags += ["-c", f"mcp_servers.{MCP_SERVER_NAME}.{key}={toml_value(value)}"]
+    return flags
 
 
 def live_roster(name: str, codex_home: Path, thread: str, codex_bin: str) -> str:
@@ -93,7 +103,7 @@ def test_a_peer_message_is_queued_into_a_renamed_codex_thread(
     )
     from mz_relay.clock import SystemClock
 
-    name = configured_name(live_codex_home)
+    name = AGENT
     thread_name = f"mzr-live-{secrets.token_hex(4)}"
     paths = paths_in(relay_home)
     work = relay_home / "work"
@@ -120,7 +130,7 @@ def test_a_peer_message_is_queued_into_a_renamed_codex_thread(
     ):
         # Registered first, so it runs last: after the pane has closed Codex.
         stack.callback(delete_thread)
-        argv = [codex_bin, *CODEX_ARGV[1:]]
+        argv = [codex_bin, *CODEX_ARGV[1:], *snippet_flags(name)]
         pane = stack.enter_context(TmuxPane(tmux_bin, argv, cwd=work, env=env))
         rows = stack.enter_context(RelayRows(paths.db))
         assert pane.wait_quiet(TUI_QUIET_S, START_S), f"the TUI never settled:\n{pane.screen()}"

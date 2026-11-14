@@ -12,6 +12,7 @@ import json
 import os
 import secrets
 import subprocess
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -75,17 +76,21 @@ class OpencodeCli:
         self._env = dict(env)
 
     def _json(self, *args: str) -> object:
-        done = subprocess.run(
-            [self._argv0, *args],
-            cwd=self._project,
-            env=self._env,
-            capture_output=True,
-            text=True,
-            timeout=CLI_TIMEOUT_S,
-            check=True,
-        )
+        # Through a pipe, `opencode export` output stopped at 16 KiB; a file gets all of it.
+        with tempfile.TemporaryFile() as out:
+            subprocess.run(
+                [self._argv0, *args],
+                cwd=self._project,
+                env=self._env,
+                stdout=out,
+                stderr=subprocess.PIPE,
+                timeout=CLI_TIMEOUT_S,
+                check=True,
+            )
+            out.seek(0)
+            text = out.read().decode()
         # `session list` prints nothing at all, not [], when there are no sessions.
-        return json.loads(done.stdout) if done.stdout.strip() else []
+        return json.loads(text) if text.strip() else []
 
     def sessions(self) -> list[str]:
         """Top-level sessions started in this project dir."""
@@ -125,6 +130,17 @@ class OpencodeCli:
                 timeout=CLI_TIMEOUT_S,
                 check=False,
             )
+
+    def agent_of_tool_output(self, session_id: str, tool: str, needle: str) -> str | None:
+        """The agent of the first message whose `tool` call returned needle; None if absent."""
+        for message in self.messages(session_id):
+            for part in message.get("parts", []):
+                if part.get("type") != "tool" or part.get("tool") != tool:
+                    continue
+                if needle in str(part.get("state", {}).get("output", "")):
+                    info = message.get("info", {})
+                    return str(info.get("agent") or info.get("mode") or "")
+        return None
 
     def agent_of_message_with(self, session_id: str, needle: str) -> str | None:
         """The agent of the first message in the session whose text holds needle; None if absent."""
@@ -192,7 +208,19 @@ def test_opencode_gets_peer_messages_in_its_main_session_under_the_peer_agent(
         assert not wait_until(gate.exists, SETTLE_S, POLL_S), pane.screen()
         assert cli.agent_of_message_with(main, f"PING-{nonce}") == PEER_AGENT
 
-        # (c) after a task subagent ran, the next peer message still lands in the main session
+        # (c) a read_only peer turn may use the read-only board tools relayd gave it. The tool's
+        # own output is checked: qwen3-coder misreports it (an id, "no tasks") in its reply. It runs
+        # before the subagent step, whose permission prompts can hold every later message.
+        marker = architect.seed_board()
+        architect.send(BOARD_ASK)
+
+        def board_listed() -> str | None:
+            return cli.agent_of_tool_output(main, "mz-relay_board_list", marker)
+
+        assert wait_until(lambda: board_listed() is not None, TURN_S, POLL_S), pane.screen()
+        assert board_listed() == PEER_AGENT
+
+        # (d) after a task subagent ran, the next peer message still lands in the main session
         pane.send_line("Use the task tool to have a general subagent list the files here.")
         assert wait_until(lambda: bool(cli.child_sessions(main)), TURN_S, POLL_S), pane.screen()
         after = architect.send(f"AFTER-{nonce}: reply with the word OK.", kind="inform")
@@ -200,8 +228,3 @@ def test_opencode_gets_peer_messages_in_its_main_session_under_the_peer_agent(
         assert cli.agent_of_message_with(main, f"AFTER-{nonce}") is not None
         for child in cli.child_sessions(main):
             assert cli.agent_of_message_with(child, f"AFTER-{nonce}") is None
-
-        # (d) a read_only peer turn may use the read-only board tools relayd gave it
-        marker = architect.seed_board()
-        architect.send(BOARD_ASK)
-        assert wait_until(lambda: rows.sent_with("helper", marker), TURN_S, POLL_S), pane.screen()

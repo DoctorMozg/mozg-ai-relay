@@ -28,9 +28,10 @@ POLL_S = 0.5
 BOARD_EXTENSION = '\n[extensions]\nenabled = ["board"]\n'
 BOARD_PROJECT = "live"
 # The task's marker is reachable only through the board tool, so a reply with it proves the call.
+# Small local models sent the task id for "title"; Codex refused to forward raw tool output.
 BOARD_ASK = (
     f"Use the mz-relay board_list tool on project {BOARD_PROJECT}, then send architect "
-    "the exact title of the task there, with kind inform."
+    "the exact title of the task there (the words after p0, not the id), with kind inform."
 )
 ARRIVED = frozenset({Status.DELIVERED, Status.ACKED})
 TMUX_TIMEOUT_S = 30.0

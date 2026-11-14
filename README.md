@@ -601,14 +601,13 @@ Logs are `relayd.log` and `hooks.log` in the state directory (`~/.local/state/mz
 ## UNTESTED
 
 > [!NOTE]
-> Every live test and the demo passed on 2026-11-14 against the [tested versions](#tested-versions).
+> Every live test and the demo passed on 2026-11-14 against the [tested versions](#tested-versions). On 2026-11-15 every live test passed again with its board step: an agent on each harness read the board from a read-only peer turn.
 
-Five claims remain open:
+Four claims remain open:
 
 - **Late async `Stop` on Claude.** A `Stop` that runs after the next peer turn has replied records its own turn's end by `prompt_id` (see [Read-only roles](#read-only-roles)). Unit tests cover it with transcript lines shaped like a 2.1.325 probe. No live test reproduces the timing.
 - **Account data terms.** The consumer and commercial data terms in the [threat model](#threat-model) come from the project research and have not been re-checked against Anthropic's current terms.
 - **Web UI launch and reconnect.** `tests/test_ui_server.py` covers the HTTP layer and `node --test` covers the front end's pure helpers. A manual pass in headless Chrome on 2026-11-14 checked sign-in, the live stream, Approve, the composer, the board and notes tabs and dark mode, but no automated test drives the page. The browser launch from `mz-relay ui` and the live stream's reconnect have not been run.
-- **Extension tools on Codex and OpenCode.** `make live-board` (two Claude accounts) passed on 2026-11-14 and `make live-pi` with its board step on 2026-11-15. On OpenCode, `board_list` ran live under `mz-relay-peer`, but qwen3-coder sent back the wrong text, so the step failed. The Codex board step has not run.
 - **Board lease in real time.** `tests/test_board.py` covers the 30-minute reclaim with a fake clock, also through a running relayd's event pump. No live run waits out a lease. The reviewer rule passed live in `make live-board`.
 
 ## Writing an extension

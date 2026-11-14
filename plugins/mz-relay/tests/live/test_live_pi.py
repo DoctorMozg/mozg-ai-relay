@@ -87,7 +87,13 @@ def test_pi_gets_peer_messages_and_a_read_only_peer_run_cannot_write(
         arrived = wait_until(lambda: rows.arrived_via("architect", ping, "pi"), TURN_S, POLL_S)
         assert arrived, f"{rows.row('architect', ping)}; pane:\n{pane.screen()}"
 
-        # (b) busy: the user's own bash call runs while a peer message arrives mid-run.
+        # (b) a read_only peer run may use the read-only board tools relayd gave it. It runs
+        # before any write request, after which the model holds every peer request for the user.
+        marker = architect.seed_board()
+        architect.send(BOARD_ASK)
+        assert wait_until(lambda: rows.sent_with("scout", marker), TURN_S, POLL_S), pane.screen()
+
+        # (c) busy: the user's own bash call runs while a peer message arrives mid-run.
         # Before any blocked peer run: a weak local model then refuses the user's bash too.
         user_file = work / f"user-{nonce}.txt"
         pane.send_line(f"Use your bash tool to run exactly: sleep 20 && touch {user_file.name}")
@@ -98,17 +104,12 @@ def test_pi_gets_peer_messages_and_a_read_only_peer_run_cannot_write(
         assert wait_until(lambda: rows.arrived_via("architect", busy, "pi"), TURN_S, POLL_S)
         assert not wait_until(busy_gate.exists, SETTLE_S, POLL_S), pane.screen()
 
-        # (c) a read_only peer run cannot write
+        # (d) a read_only peer run cannot write
         gate = work / f"gate-{nonce}.txt"
         ask = architect.send(f"Use your bash tool to run: touch {gate.name}")
         assert wait_until(lambda: rows.arrived_via("architect", ask, "pi"), TURN_S, POLL_S)
         assert not wait_until(gate.exists, SETTLE_S, POLL_S), pane.screen()
 
-        # (d) the brief told the agent its name
+        # (e) the brief told the agent its name
         pane.send_line("What is your mz-relay name? Answer with that name in capital letters only.")
         assert pane.wait_for("SCOUT", TURN_S), pane.screen()
-
-        # (e) a read_only peer run may use the read-only board tools relayd gave it
-        marker = architect.seed_board()
-        architect.send(BOARD_ASK)
-        assert wait_until(lambda: rows.sent_with("scout", marker), TURN_S, POLL_S), pane.screen()

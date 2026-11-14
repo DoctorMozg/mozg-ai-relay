@@ -24,6 +24,8 @@ class StreamJsonClaude:
         # results() re-enters the lock from inside wait_results(), so it must be reentrant.
         self._changed = threading.Condition(threading.RLock())
         self._log = log.open("wb")
+        # Claude's own debug log: the only record of where a session stalls before its init event.
+        self.debug_log = log.with_suffix(".debug")
         argv = [
             claude,
             "-p",
@@ -34,6 +36,8 @@ class StreamJsonClaude:
             "--verbose",
             "--plugin-dir",
             str(PLUGIN),
+            "--debug-file",
+            str(self.debug_log),
             *extra,
         ]
         try:
@@ -93,16 +97,22 @@ class StreamJsonClaude:
         with self._changed:
             return any(text in json.dumps(event) for event in self.events)
 
-    def diagnose(self, events: int = 8) -> str:
-        """Exit code, the last stream events by type and the stderr tail, for a failed wait."""
+    def diagnose(self, events: int = 8, debug_lines: int = 15) -> str:
+        """Exit code, the last stream events, the stderr tail and the debug log tail."""
         with self._changed:
             tail = [f"{e.get('type')}/{e.get('subtype', '')}" for e in self.events[-events:]]
             count = len(self.events)
         self._log.flush()
         stderr = Path(self._log.name).read_text(encoding="utf-8", errors="replace")[-2000:]
+        try:
+            debug = self.debug_log.read_text(encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            debug = ""
+        debug_tail = "\n".join(debug.splitlines()[-debug_lines:])
         return (
             f"exit={self.proc.poll()} events={count} last={tail}\n"
-            f"stderr tail:\n{stderr or '(empty)'}"
+            f"stderr tail:\n{stderr or '(empty)'}\n"
+            f"debug log {self.debug_log} tail:\n{debug_tail or '(empty)'}"
         )
 
     def close(self) -> None:
