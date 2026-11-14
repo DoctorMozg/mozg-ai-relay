@@ -221,6 +221,7 @@ class RelayService:
             "status": self._status,
             "context_extend": self._context_extend,
             "log": self._log,
+            "message": self._message,
             "watch": self._watch,
             "shutdown": self._shutdown,
         }
@@ -625,6 +626,20 @@ class RelayService:
                 }
             )
         return {"messages": messages}
+
+    def _message(self, conn: ConnState, args: _Args) -> dict[str, object]:
+        """One message whole, body included; the user's detail view, so CLI only."""
+        _require_cli(conn, "message")
+        source = args.text("source")
+        msg_id = args.message_id("id")
+        row = self._deps.store.get(source, msg_id)
+        if row is None:
+            raise NotFound("not_found", f"no message {msg_id} from {source}")
+        return {
+            "envelope": row.envelope.to_json(),
+            "status": row.status.value,
+            "reason": row.reason,
+        }
 
     def _watch(self, conn: ConnState, args: _Args) -> dict[str, object]:
         """Events after since, waiting up to timeout_s for one; no since answers the head seq."""

@@ -8,6 +8,7 @@ import logging
 import math
 import os
 import sys
+import webbrowser
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
@@ -36,6 +37,7 @@ from mz_relay.relayd import DEFAULT_IDLE_EXIT_S, run_daemon
 from mz_relay.roster import Harness, load_roster
 from mz_relay.service import CONTEXT_EXTEND_MAX, LOG_LIMIT_DEFAULT, LOG_LIMIT_MAX
 from mz_relay.tool_backend import MCP_HARNESSES, run_mcp
+from mz_relay.ui_server import UiConfig, UiServer, bundled_static, new_token, write_launch_page
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +56,8 @@ AGENT_ENV_MARKERS = (
 SOURCE_HELP = "the sender, when held messages from several senders share the id"
 REFUSAL = "approve, deny and context extend must be run by the user in a terminal, not by an agent"
 USER_REFUSAL = "send, inbox and ack act as the user and must be run in a terminal, not by an agent"
+UI_REFUSAL = "ui acts as the user and must be run in a terminal, not by an agent"
+PORT_MAX = 65_535
 SEND_KINDS = ("request", "inform", "reply", "done")
 LIST_PREVIEW_CHARS = 60
 CONTEXT_EXTEND_BY = 20
@@ -160,6 +164,12 @@ def _inbox_limit(raw: str) -> int:
     return value
 
 
+def _port(raw: str) -> int:
+    if not raw.isdigit() or int(raw) > PORT_MAX:
+        raise argparse.ArgumentTypeError(f"must be a port in 0..{PORT_MAX}, got {raw!r}")
+    return int(raw)
+
+
 def _context_id(raw: str) -> str:
     if not raw:
         raise argparse.ArgumentTypeError("must be a non-empty context id")
@@ -257,6 +267,9 @@ def build_parser() -> argparse.ArgumentParser:
     snippet.add_argument("kind", choices=["opencode", "codex"])
     snippet.add_argument("--name", required=True, metavar="N", help="the agent's roster name")
     commands.add_parser("doctor", help="check the setup without starting relayd")
+    ui = commands.add_parser("ui", help="serve the web UI on 127.0.0.1 until Ctrl-C")
+    ui.add_argument("--port", type=_port, default=0, metavar="N", help="default: a free port")
+    ui.add_argument("--no-open", action="store_true", help="print the address, open no browser")
     return parser
 
 
@@ -318,6 +331,8 @@ def main(argv: Sequence[str] | None = None, *, terminal: Terminal | None = None)
         return user.inbox(args.limit, terminal or user_terminal())
     if args.command == "ack":
         return user.ack(args.id, terminal or user_terminal())
+    if args.command == "ui":
+        return user.ui(args.port, terminal or user_terminal(), open_browser=not args.no_open)
     parser.error(f"unhandled command {args.command!r}")
 
 
@@ -577,6 +592,42 @@ class UserCommands:
             except RelayError as exc:
                 return _fail(exc, EXIT_ERROR)
         sys.stdout.write(f"acked {msg_id}\n")
+        return EXIT_OK
+
+    def ui(self, port: int, terminal: Terminal, *, open_browser: bool) -> int:
+        """Serves the web UI; the sign-in address goes to this terminal only."""
+        if _refused(terminal, "ui", UI_REFUSAL):
+            return EXIT_USAGE
+        launcher = DaemonLauncher(self._paths, clock=SystemClock())
+        try:
+            launcher.connect(client="cli").close()
+        except RelayError as exc:
+            return _fail(exc, EXIT_ERROR)
+        cfg = UiConfig(
+            connect=lambda: launcher.connect(client="cli"),
+            token=new_token(),
+            static=bundled_static(),
+        )
+        try:
+            server = UiServer(cfg, port)
+        except OSError as exc:
+            sys.stderr.write(f"{PROG}: cannot listen on 127.0.0.1:{port}: {exc.strerror}\n")
+            return EXIT_ERROR
+        url = server.url()
+        sys.stdout.write(f"mz-relay UI: {url}\nCtrl-C stops it.\n")
+        sys.stdout.flush()
+        log.info("UI listening on 127.0.0.1:%d", server.port)
+        page = write_launch_page(self._paths.runtime_dir, url) if open_browser else None
+        try:
+            if page is not None:
+                webbrowser.open(page.as_uri())
+            server.serve_forever()
+        except KeyboardInterrupt:
+            sys.stdout.write("UI stopped\n")
+        finally:
+            server.server_close()
+            if page is not None:
+                page.unlink(missing_ok=True)
         return EXIT_OK
 
     def decide(self, decision: Decision, terminal: Terminal) -> int:
