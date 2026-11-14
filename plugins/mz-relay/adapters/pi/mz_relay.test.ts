@@ -204,6 +204,20 @@ describe("adapter socket", () => {
     assert.deepEqual(await exchange(r.socket, { op: "bogus" }), { nack: "", error: "unknown op" });
   });
 
+  test("a partial line over 1 MiB in UTF-8 but under it in UTF-16 closes the connection", TEST_TIMEOUT, async () => {
+    const r = await startRig();
+    await r.listening();
+    const client = await AdapterClient.connect(r.socket);
+    try {
+      // 600 000 two-byte chars: 1.2 MB on the wire, 600 000 UTF-16 code units.
+      client.write("é".repeat(600_000));
+      await waitUntil(() => client.ended, "the adapter to close the connection");
+    } finally {
+      client.close();
+    }
+    assert.ok(r.home.readLog("pi").includes("a line over 1048576 bytes"), "the oversized line is logged");
+  });
+
   test("a malformed line gets no reply and the connection stays usable", TEST_TIMEOUT, async () => {
     const r = await startRig();
     await r.listening();
@@ -244,6 +258,18 @@ describe("failures, logging and shutdown", () => {
     const log = r.home.readLog("pi");
     assert.equal(log.includes(SECRET_WORDS), false, "no message body in the log");
     assert.equal(log.includes(FAKE_TOKEN), false, "no token in the log");
+  });
+
+  test("a session_shutdown while the socket is still opening leaves no socket and no presence", TEST_TIMEOUT, async () => {
+    const r = await startRig({ sessionStart: false });
+    // session_start runs up to its listen await, so the shutdown lands mid-listen.
+    const starting = r.pi.sessionStart();
+    await r.shutdown();
+    await starting;
+    await delay(300);
+    assert.equal(await socketAccepts(r.socket), false, "no socket listening after shutdown");
+    assert.equal(existsSync(r.socket), false, "no socket file left behind");
+    assert.equal(r.fakeRelayd.framesOf("register").length, 0, "no presence after shutdown");
   });
 
   test("session_shutdown removes the socket, closes presence and stops reconnecting", TEST_TIMEOUT, async () => {

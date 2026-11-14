@@ -11,12 +11,15 @@ All notable changes are listed here. The format follows Keep a Changelog, and ve
 ### Fixed
 
 - A heartbeat on an unchanged registration no longer re-arms a pull-only message for one extra delivery pass.
+- The OpenCode adapter nacks a failed `promptAsync` with the error name only, so error data that echoes the request cannot reach relayd.log.
+- The Pi adapter closes a `session_shutdown` that lands while its socket is still opening, instead of leaving the socket and presence running, and counts its 1 MiB line limit in bytes.
 - `mz-relay held`, `approve`, `deny` and `log` show line separators (U+2028, U+2029) and bidi controls in peer text as U+FFFD, like other control characters.
 - `mz-relay log --context ""` is a usage error (exit 2) instead of a relayd error (exit 1).
 - `mz-relay install opencode` installs under `$XDG_CONFIG_HOME/opencode/` when that is set, where OpenCode looks for it.
 
 ### Changed
 
+- OpenCode adapter log lines carry `mz-relay-oc[<pid>]` and a level, like the Pi adapter's; `MZ_RELAY_RECONNECT_MS` is read with `Number`, as Pi reads it.
 - Store schema 2 adds an index on `messages(context_id, created_at)` for `log --context`; a schema 1 database is migrated when relayd opens it.
 
 ## [0.1.0] - 2026-11-14

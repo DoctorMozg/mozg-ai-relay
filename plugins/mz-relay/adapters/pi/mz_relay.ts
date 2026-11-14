@@ -59,6 +59,11 @@ const PROTOCOL_VERSION = 1;
 // sun_path is 108 bytes including the trailing NUL.
 const SOCKET_PATH_LIMIT = 108;
 const MAX_LINE_BYTES = 1_048_576;
+
+// The limit is in bytes, as relayd counts it; a string's length counts UTF-16 code units.
+function overLineLimit(buffer: string): boolean {
+  return Buffer.byteLength(buffer) > MAX_LINE_BYTES;
+}
 const REQUEST_TIMEOUT_MS = 10_000;
 const BACKOFF_MS = [1000, 2000, 5000, 10000, 30000];
 const SEEN_MAX = 1000;
@@ -281,7 +286,7 @@ class RelayConnection {
       this.buffer = this.buffer.slice(end + 1);
       end = this.buffer.indexOf("\n");
     }
-    if (this.buffer.length > MAX_LINE_BYTES) this.close();
+    if (overLineLimit(this.buffer)) this.close();
   }
 
   private answer(line: string): void {
@@ -528,7 +533,7 @@ class AdapterServer {
         buffer = buffer.slice(end + 1);
         end = buffer.indexOf("\n");
       }
-      if (buffer.length > MAX_LINE_BYTES) {
+      if (overLineLimit(buffer)) {
         this.log.warn(`a line over ${MAX_LINE_BYTES} bytes on the adapter socket; closing the connection`);
         socket.destroy();
       }
@@ -834,8 +839,15 @@ class MzRelayExtension {
     }
     if (loosened !== null) log.info(`tightened ${paths.run} from ${loosened.toString(8)} to 700`);
     try {
-      this.server = new AdapterServer(paths.adapterSocket, log, (frame) => this.answer(frame));
-      const listening = await this.server.listen();
+      const server = new AdapterServer(paths.adapterSocket, log, (frame) => this.answer(frame));
+      this.server = server;
+      const listening = await server.listen();
+      if (this.server !== server) {
+        // session_shutdown ran during listen and found no server to close yet.
+        server.close();
+        log.info("session ended while the adapter socket was opening");
+        return;
+      }
       // Without a listening socket relayd could only fail deliveries, so the session registers pull-only.
       const delivery = listening ? { socket: paths.adapterSocket, pid: process.pid } : undefined;
       this.presence = new Presence(paths, log, {

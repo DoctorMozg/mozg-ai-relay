@@ -161,14 +161,15 @@ describe("delivery", () => {
     assert.equal(r.client.calls.length, 0);
   });
 
-  test("a promptAsync error result is nacked with the error text", TEST_TIMEOUT, async () => {
+  test("a promptAsync error result is nacked with its name only, never the data it echoes", TEST_TIMEOUT, async () => {
     const r = await startRig();
     await r.chat("s1");
-    r.client.outcome = { error: { name: "x" } };
+    // A validation error may echo the request, and the nack text ends up in relayd.log.
+    r.client.outcome = { error: { name: "BadRequest", data: { received: SECRET_WORDS } } };
     const reply = await deliver(r, "full");
     assert.equal(reply.nack, "m1");
     assert.equal("ack" in reply, false);
-    assert.match(String(reply.error), /x/);
+    assert.equal(reply.error, "promptAsync error: BadRequest");
   });
 
   test("a promptAsync status of 300 or more is nacked", TEST_TIMEOUT, async () => {
@@ -183,10 +184,23 @@ describe("delivery", () => {
   test("a rejected promptAsync is nacked, not thrown", TEST_TIMEOUT, async () => {
     const r = await startRig();
     await r.chat("s1");
-    r.client.outcome = { reject: new Error("server gone") };
+    r.client.outcome = { reject: new Error(`server gone ${SECRET_WORDS}`) };
     const reply = await deliver(r, "full");
     assert.equal(reply.nack, "m1");
-    assert.match(String(reply.error), /server gone/);
+    assert.equal(reply.error, "promptAsync rejected: Error");
+  });
+
+  test("every adapter log line carries the pid and a level", TEST_TIMEOUT, async () => {
+    const r = await startRig();
+    await r.chat("s1");
+    await r.fakeRelayd.waitFor("register");
+    r.client.outcome = { error: { name: "BadRequest" } };
+    await deliver(r, "full");
+    const lines = r.home.readLog("oc").split("\n").filter(Boolean);
+    assert.ok(lines.length >= 2, "the registration and the nack are logged");
+    const prefix = new RegExp(`^\\S+ mz-relay-oc\\[${process.pid}\\] (INFO|WARNING|ERROR) `);
+    for (const line of lines) assert.match(line, prefix);
+    assert.ok(lines.some((line) => / WARNING deliver m1 nacked/.test(line)), "a nack is a warning");
   });
 });
 

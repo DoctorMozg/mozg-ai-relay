@@ -95,7 +95,7 @@ function ownRunDir(run: string, log: AdapterLog): void {
   const mode = info.mode & 0o777;
   if (mode !== PRIVATE_MODE) {
     chmodSync(run, PRIVATE_MODE);
-    log.write(`tightened ${run} from ${mode.toString(8)} to ${PRIVATE_MODE.toString(8)}`);
+    log.info(`tightened ${run} from ${mode.toString(8)} to ${PRIVATE_MODE.toString(8)}`);
   }
 }
 
@@ -106,9 +106,22 @@ class AdapterLog {
     this.path = path;
   }
 
-  write(message: string): void {
+  info(message: string): void {
+    this.write("INFO", message);
+  }
+
+  warn(message: string): void {
+    this.write("WARNING", message);
+  }
+
+  error(message: string): void {
+    this.write("ERROR", message);
+  }
+
+  private write(level: string, message: string): void {
+    const line = `${new Date().toISOString()} mz-relay-oc[${process.pid}] ${level} ${message}\n`;
     try {
-      appendFileSync(this.path, `${new Date().toISOString()} ${message}\n`, { mode: 0o600 });
+      appendFileSync(this.path, line, { mode: 0o600 });
     } catch {
       // The log is the only error channel; the plugin must not throw into OpenCode when it fails.
     }
@@ -120,13 +133,10 @@ function errorCode(err: unknown): string {
   return err instanceof Error ? err.name : "unknown";
 }
 
-function errorText(value: unknown): string {
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value) ?? String(value);
-  } catch {
-    return String(value);
-  }
+// Only the name: an error's data may echo the request, and nack texts reach relayd.log.
+function errorName(value: unknown): string {
+  if (value && typeof value === "object" && "name" in value && typeof value.name === "string") return value.name;
+  return "unknown";
 }
 
 function installedBin(config: string, log: AdapterLog): string | null {
@@ -143,13 +153,13 @@ function installedBin(config: string, log: AdapterLog): string | null {
       return record.bin;
     }
   } catch {
-    log.write(`install record ${path} is not valid JSON`);
+    log.warn(`install record ${path} is not valid JSON`);
   }
   return null;
 }
 
 function retryDelay(attempt: number): number {
-  const override = Number.parseInt(process.env.MZ_RELAY_RECONNECT_MS ?? "", 10);
+  const override = Number(process.env.MZ_RELAY_RECONNECT_MS ?? "");
   if (override > 0) return override;
   return BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)] as number;
 }
@@ -203,7 +213,7 @@ class Presence {
   start(): void {
     if (this.started || this.closed) return;
     this.started = true;
-    this.params.log.write("first top-level chat; registering with relayd");
+    this.params.log.info("first top-level chat; registering with relayd");
     this.dial();
   }
 
@@ -233,7 +243,7 @@ class Presence {
       // Only a failed connect means no relayd is listening, the one case a spawn can fix.
       unreachable = !connected && (code === "ENOENT" || code === "ECONNREFUSED");
       // Retries run every few seconds while relayd is down; one line per outage is enough.
-      if (!this.outageLogged) log.write(`relayd connection error: ${code}`);
+      if (!this.outageLogged) log.warn(`relayd connection error: ${code}`);
       this.outageLogged = true;
     });
     socket.on("close", () => {
@@ -249,7 +259,7 @@ class Presence {
   onReply(socket: net.Socket, frame: Frame | null): void {
     const { log } = this.params;
     if (!frame) {
-      log.write("malformed line from relayd ignored");
+      log.warn("malformed line from relayd ignored");
       return;
     }
     if (frame.ok !== true) {
@@ -258,7 +268,7 @@ class Presence {
       // A roster mistake is refused on every retry; one line per code until a register succeeds.
       if (!this.refusalsLogged.has(code)) {
         this.refusalsLogged.add(code);
-        log.write(`relayd refused request ${String(frame.rid)}: ${code}: ${String(error.message)}`);
+        log.warn(`relayd refused request ${String(frame.rid)}: ${code}: ${String(error.message)}`);
       }
       socket.destroy();
       return;
@@ -271,7 +281,7 @@ class Presence {
         pid: process.pid,
       };
       if (this.delivery) args.delivery = this.delivery;
-      else log.write("adapter socket is not listening; registering pull-only");
+      else log.warn("adapter socket is not listening; registering pull-only");
       this.send(socket, 2, "register", args);
     } else if (frame.rid === 2) {
       // The token is not kept: OpenCode reaches relayd's tools through its own MCP server.
@@ -279,7 +289,7 @@ class Presence {
       this.attempt = 0;
       this.spawnTried = false;
       this.refusalsLogged.clear();
-      log.write(`registered as ${String(agent.name)}`);
+      log.info(`registered as ${String(agent.name)}`);
     }
   }
 
@@ -304,16 +314,16 @@ class Presence {
     const { paths, log } = this.params;
     const bin = installedBin(paths.config, log);
     if (!bin) {
-      log.write("relayd unreachable and install.json has no bin; not spawning");
+      log.warn("relayd unreachable and install.json has no bin; not spawning");
       return;
     }
-    log.write(`relayd unreachable; spawning ${bin} daemon --ensure`);
+    log.info(`relayd unreachable; spawning ${bin} daemon --ensure`);
     try {
       const child = spawn(bin, ["daemon", "--ensure"], { detached: true, stdio: "ignore" });
-      child.on("error", (err) => log.write(`spawn of ${bin} failed: ${errorCode(err)}`));
+      child.on("error", (err) => log.error(`spawn of ${bin} failed: ${errorCode(err)}`));
       child.unref();
     } catch (err) {
-      log.write(`spawn of ${bin} failed: ${errorCode(err)}`);
+      log.error(`spawn of ${bin} failed: ${errorCode(err)}`);
     }
   }
 }
@@ -342,14 +352,14 @@ class OcAdapter {
   async listen(): Promise<void> {
     const size = Buffer.byteLength(this.socketPath);
     if (size >= SOCKET_PATH_LIMIT) {
-      this.log.write(`listen error on ${this.socketPath}: ${size} bytes, Unix sockets need fewer than ${SOCKET_PATH_LIMIT}`);
+      this.log.error(`listen error on ${this.socketPath}: ${size} bytes, Unix sockets need fewer than ${SOCKET_PATH_LIMIT}`);
       return;
     }
     try {
       // The socket is keyed on our pid, so a file already there is a leftover from a killed process.
       unlinkSync(this.socketPath);
     } catch (err) {
-      if (errorCode(err) !== "ENOENT") this.log.write(`cannot remove stale ${this.socketPath}: ${errorCode(err)}`);
+      if (errorCode(err) !== "ENOENT") this.log.warn(`cannot remove stale ${this.socketPath}: ${errorCode(err)}`);
     }
     const server = net.createServer((socket) => this.accept(socket));
     this.server = server;
@@ -357,10 +367,10 @@ class OcAdapter {
       // Kept for the server's whole life: an 'error' with no listener would crash OpenCode.
       server.on("error", (err) => {
         if (this.listening) {
-          this.log.write(`adapter server error: ${errorCode(err)}`);
+          this.log.warn(`adapter server error: ${errorCode(err)}`);
           return;
         }
-        this.log.write(`listen error on ${this.socketPath}: ${errorCode(err)}`);
+        this.log.error(`listen error on ${this.socketPath}: ${errorCode(err)}`);
         resolve();
       });
       server.listen(this.socketPath, () => {
@@ -374,10 +384,10 @@ class OcAdapter {
   accept(socket: net.Socket): void {
     this.connections.add(socket);
     socket.on("close", () => this.connections.delete(socket));
-    socket.on("error", (err) => this.log.write(`adapter connection error: ${errorCode(err)}`));
+    socket.on("error", (err) => this.log.warn(`adapter connection error: ${errorCode(err)}`));
     onLines(socket, (frame) => {
       if (!frame) {
-        this.log.write("malformed adapter frame ignored");
+        this.log.warn("malformed adapter frame ignored");
         return;
       }
       void this.answer(frame).then((reply) => {
@@ -391,7 +401,7 @@ class OcAdapter {
     if (frame.op !== "deliver") return { nack: id, error: "unknown op" };
     const gate = frame.gate;
     if (!id || typeof frame.text !== "string" || (gate !== "full" && gate !== "read_only")) {
-      this.log.write(`deliver ${id || "<no id>"} nacked: invalid frame`);
+      this.log.warn(`deliver ${id || "<no id>"} nacked: invalid frame`);
       return { nack: id, error: "invalid deliver frame" };
     }
     return this.deliver(id, frame.text, gate);
@@ -407,19 +417,19 @@ class OcAdapter {
     try {
       result = await this.client.session.promptAsync({ path: { id: session }, body });
     } catch (err) {
-      this.log.write(`deliver ${id} nacked: promptAsync rejected (${errorCode(err)})`);
-      return { nack: id, error: `promptAsync rejected: ${String(err)}` };
+      this.log.warn(`deliver ${id} nacked: promptAsync rejected (${errorCode(err)})`);
+      return { nack: id, error: `promptAsync rejected: ${errorCode(err)}` };
     }
     if (result?.error !== undefined) {
-      this.log.write(`deliver ${id} nacked: promptAsync returned an error`);
-      return { nack: id, error: `promptAsync error: ${errorText(result.error)}` };
+      this.log.warn(`deliver ${id} nacked: promptAsync returned an error`);
+      return { nack: id, error: `promptAsync error: ${errorName(result.error)}` };
     }
     const status = result?.response?.status;
     if (typeof status === "number" && status >= 300) {
-      this.log.write(`deliver ${id} nacked: promptAsync status ${status}`);
+      this.log.warn(`deliver ${id} nacked: promptAsync status ${status}`);
       return { nack: id, error: `promptAsync answered status ${status}` };
     }
-    this.log.write(`delivered ${id} to session ${session}`);
+    this.log.info(`delivered ${id} to session ${session}`);
     return { ack: id, state: "delivered" };
   }
 
@@ -435,7 +445,7 @@ class OcAdapter {
     if (c.mcp?.[APP] !== undefined) return;
     const bin = installedBin(this.paths.config, this.log);
     if (!bin) {
-      this.log.write("install.json has no bin; no mz-relay MCP entry added");
+      this.log.warn("install.json has no bin; no mz-relay MCP entry added");
       return;
     }
     const name = process.env.MZ_RELAY_NAME;
@@ -448,7 +458,7 @@ class OcAdapter {
     if (event.type !== "session.created" && event.type !== "session.updated") return;
     const info = event.properties?.info as Frame | undefined;
     if (!info || typeof info.id !== "string" || typeof info.parentID !== "string" || !info.parentID) return;
-    if (!this.childSessions.has(info.id)) this.log.write(`session ${info.id} is a child of ${info.parentID}`);
+    if (!this.childSessions.has(info.id)) this.log.info(`session ${info.id} is a child of ${info.parentID}`);
     this.childSessions.add(info.id);
     if (this.lastSession === info.id) this.lastSession = info.parentID;
   }
@@ -470,7 +480,7 @@ class OcAdapter {
     try {
       unlinkSync(this.socketPath);
     } catch (err) {
-      if (errorCode(err) !== "ENOENT") this.log.write(`cannot remove ${this.socketPath}: ${errorCode(err)}`);
+      if (errorCode(err) !== "ENOENT") this.log.warn(`cannot remove ${this.socketPath}: ${errorCode(err)}`);
     }
   }
 
@@ -479,7 +489,7 @@ class OcAdapter {
     try {
       await run();
     } catch (err) {
-      this.log.write(`${hook} hook failed: ${errorCode(err)}`);
+      this.log.error(`${hook} hook failed: ${errorCode(err)}`);
     }
   }
 }
