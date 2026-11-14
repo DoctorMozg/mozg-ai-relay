@@ -4,7 +4,7 @@ LIVE := claude codex pi opencode demo
 
 SUITES := tests $(patsubst %/,%,$(wildcard plugins/*/tests/))
 PLUGINS := $(patsubst %/,%,$(wildcard plugins/*/))
-JS_TESTS := $(wildcard plugins/*/adapters/*/*.test.ts)
+JS_TESTS := $(wildcard plugins/*/adapters/*/*.test.ts plugins/*/tests/ui/*.test.js)
 
 # xdist workers per suite; `make test TEST_WORKERS=0` runs every suite in one process, for readable failures.
 TEST_WORKERS ?= 4

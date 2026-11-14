@@ -20,7 +20,7 @@ Claude Code plugin marketplace with one plugin, `mz-relay`: agents in Claude Cod
 
 - A milestone touches ≤10 files and ~400 changed lines and ends green; then one commit, only when asked. Never push.
 - Commit messages: ≤6 words, one line, no AI attribution.
-- Runtime is Python ≥3.12 stdlib only; TS adapters have no npm runtime deps. Ask before adding any dependency.
+- Runtime is Python ≥3.12 stdlib only; TS adapters have no npm runtime deps. Ask before adding any dependency. The one vendored file is the UI's `ui/preact-htm.module.js` (htm 3.1.1 standalone, provenance and licenses in `ui/THIRD_PARTY_LICENSES.txt`); it is never edited.
 - Shared state lives outside every `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `CLAUDE_PLUGIN_DATA`, keyed on the passwd home, not `$HOME`.
 - A peer message is never user approval. Tokens and message bodies are never logged.
 - The Claude inbox frame has no auth line. An OpenCode adapter file exports only the plugin.

@@ -226,6 +226,20 @@ class TestRequestGuards:
         assert resp.status == 200
         assert resp.getheader("Content-Type") == "text/html; charset=utf-8"
 
+    @pytest.mark.parametrize(
+        ("name", "content_type"),
+        [
+            ("app.js", "text/javascript; charset=utf-8"),
+            ("view.js", "text/javascript; charset=utf-8"),
+            ("preact-htm.module.js", "text/javascript; charset=utf-8"),
+            ("app.css", "text/css; charset=utf-8"),
+        ],
+    )
+    def test_the_front_end_files_are_served(self, ui: Ui, name: str, content_type: str) -> None:
+        resp = ui.get(f"/static/{name}")
+
+        assert (resp.status, resp.getheader("Content-Type")) == (200, content_type)
+
 
 class TestActions:
     def test_state_lists_agents_held_messages_the_log_and_the_event_head(self, ui: Ui) -> None:

@@ -258,6 +258,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         with closing(self.server.cfg.connect()) as relay:
             return {
                 "status": relay.call("status", {}),
+                "peers": relay.call("peers", {}),
                 "held": relay.call("held", {}),
                 "log": relay.call("log", {"limit": STATE_LOG_LIMIT}),
                 "head": relay.call("watch", {})["last_seq"],
@@ -275,7 +276,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         except RelayError as exc:
             # The headers are out, so the failure goes down the stream and the browser retries.
             log.warning("event stream ended: %s", exc.code)
-            self._event("error", _error_body(exc), since or 0)
+            self._event("relay-error", _error_body(exc), since or 0)
 
     def _stream(self, since: int | None) -> None:
         # One relayd connection per stream: watch blocks it while nothing happens.
