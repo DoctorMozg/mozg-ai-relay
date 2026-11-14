@@ -116,6 +116,8 @@ class TranscriptWriter:
         self._ticks = itertools.count()
         self._prompts = itertools.count(1)
         self._partial_open = False
+        # Prompts start a turn id; tool results and meta lines carry it, replies do not.
+        self.prompt_id = str(uuid.uuid4())
         # A FakeClaudeSession server thread and the test thread may append at once.
         self._lock = threading.Lock()
 
@@ -144,13 +146,13 @@ class TranscriptWriter:
             "handback": True,
             "handbackReportText": report,
         }
-        return self._append(self._system_prompt(content, origin))
+        return self._append(self._system_prompt(content, origin, joined=joined))
 
     def task_notification(
         self, text: str = TASK_NOTIFICATION, *, turn_origin: str | None = "task_notification"
     ) -> dict[str, object]:
         """A background task notice; no isMeta; turn_origin None omits turnOrigin."""
-        line = self._base()
+        line = self._prompt_base()
         line.update(
             {
                 "type": "user",
@@ -168,7 +170,7 @@ class TranscriptWriter:
 
     def compact_summary(self, *, turn_origin: str | None = None) -> dict[str, object]:
         """A compaction summary: isCompactSummary, no origin, no isMeta."""
-        line = self._base()
+        line = self._prompt_base()
         line.update(
             {
                 "type": "user",
@@ -184,7 +186,7 @@ class TranscriptWriter:
 
     def sdk_prompt(self, text: str) -> dict[str, object]:
         """A `claude -p` / Agent SDK prompt: no origin, turnOrigin and promptSource sdk."""
-        line = self._base()
+        line = self._prompt_base()
         line.update(
             {
                 "type": "user",
@@ -199,7 +201,7 @@ class TranscriptWriter:
 
     def human(self, text: str) -> dict[str, object]:
         """A typed prompt on CC ≥2.1.316: origin kind human."""
-        line = self._base()
+        line = self._prompt_base()
         line.update(
             {
                 "type": "user",
@@ -215,7 +217,7 @@ class TranscriptWriter:
 
     def human_legacy(self, text: str) -> dict[str, object]:
         """A typed prompt from before 2.1.316: no origin, no turnOrigin, no isMeta."""
-        line = self._base()
+        line = self._prompt_base()
         line.update({"type": "user", "message": {"role": "user", "content": text}})
         return self._append(self._tail(line))
 
@@ -225,7 +227,7 @@ class TranscriptWriter:
             {"type": "text", "text": text},
             {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": ""}},
         ]
-        line = self._base()
+        line = self._prompt_base()
         line.update(
             {
                 "type": "user",
@@ -273,6 +275,7 @@ class TranscriptWriter:
     def assistant(self, text: str) -> dict[str, object]:
         """An assistant text reply."""
         line = self._base()
+        del line["promptId"]
         line.update(
             {
                 "type": "assistant",
@@ -323,11 +326,13 @@ class TranscriptWriter:
             "fromMode": "prompting",
             "body": text,
         }
-        return self._system_prompt(content, origin)
+        return self._system_prompt(content, origin, joined=joined)
 
-    def _system_prompt(self, content: str, origin: dict[str, object]) -> dict[str, object]:
+    def _system_prompt(
+        self, content: str, origin: dict[str, object], *, joined: bool
+    ) -> dict[str, object]:
         # The full field set of a real peer line, in Claude's key order.
-        line = self._base()
+        line = self._base() if joined else self._prompt_base()
         line.update(
             {
                 "type": "user",
@@ -345,7 +350,11 @@ class TranscriptWriter:
         return self._tail(line)
 
     def _base(self) -> dict[str, object]:
-        return {"parentUuid": self._parent, "isSidechain": False, "promptId": str(uuid.uuid4())}
+        return {"parentUuid": self._parent, "isSidechain": False, "promptId": self.prompt_id}
+
+    def _prompt_base(self) -> dict[str, object]:
+        self.prompt_id = str(uuid.uuid4())
+        return self._base()
 
     def _tail(self, line: dict[str, object], *, entrypoint: str = "cli") -> dict[str, object]:
         line_id = str(uuid.uuid4())

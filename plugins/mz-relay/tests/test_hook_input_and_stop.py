@@ -51,6 +51,11 @@ class TestParseHookInput:
 
         assert (got.event, got.tool_name, got.source) == ("PreToolUse", "Write", None)
 
+    def test_stop_input_carries_the_prompt_id(self) -> None:
+        raw = hook_json(hook_event_name="Stop", source=None, prompt_id="6dfb3ef7")
+
+        assert parse_hook_input(raw).prompt_id == "6dfb3ef7"
+
     def test_missing_transcript_path_is_none(self) -> None:
         assert parse_hook_input(hook_json(transcript_path=None)).transcript_path is None
 
@@ -64,6 +69,8 @@ class TestParseHookInput:
             hook_json(session_id=7),
             # The id names lock and marker files, so a path in it must not escape their folders.
             hook_json(session_id="../s-1"),
+            hook_json(prompt_id=""),
+            hook_json(prompt_id=7),
         ],
     )
     def test_bad_input_is_invalid_args(self, raw: str) -> None:
@@ -94,9 +101,12 @@ class StopRig:
         self.marker.parent.mkdir(parents=True, exist_ok=True)
         self.marker.write_text(str(offset), encoding="ascii")
 
-    def run(self, event: HookEvent, *, transcript: Path | None = None) -> tuple[int, str]:
+    def run(
+        self, event: HookEvent, *, transcript: Path | None = None, prompt_id: str | None = None
+    ) -> tuple[int, str]:
         path = self.writer.path if transcript is None else transcript
-        hook = parse_hook_input(hook_json(hook_event_name=event, transcript_path=str(path)))
+        raw = hook_json(hook_event_name=event, transcript_path=str(path), prompt_id=prompt_id)
+        hook = parse_hook_input(raw)
         stderr = io.StringIO()
         code = InThread(lambda: self.waiter.run(event, hook, stderr)).result(5.0)
         return code, stderr.getvalue()
@@ -172,6 +182,47 @@ class TestStopWithLockHeld:
         stop_rig.run("Stop")
 
         assert stop_rig.turn_end.read_text(encoding="ascii") == str(turn_end)
+
+    def test_a_late_stop_with_its_prompt_id_records_its_own_turn_end(
+        self, stop_rig: StopRig
+    ) -> None:
+        stop_rig.writer.human("review the plan")
+        own_turn = stop_rig.writer.prompt_id
+        stop_rig.writer.assistant("done")
+        turn_end = stop_rig.writer.path.stat().st_size
+        # The next peer turn has already replied once when the async Stop hook runs.
+        stop_rig.writer.peer("[mz-relay] Peer message from sender to cc.")
+        stop_rig.writer.assistant("checking")
+        stop_rig.writer.tool_result()
+
+        stop_rig.run("Stop", prompt_id=own_turn)
+
+        assert stop_rig.turn_end.read_text(encoding="ascii") == str(turn_end)
+
+    def test_a_post_that_joined_the_turn_does_not_cut_its_end_short(
+        self, stop_rig: StopRig
+    ) -> None:
+        stop_rig.writer.human("review the plan")
+        own_turn = stop_rig.writer.prompt_id
+        stop_rig.writer.assistant("reading")
+        stop_rig.writer.peer("[mz-relay] Peer message from sender to cc.", joined=True)
+        stop_rig.writer.assistant("done")
+
+        stop_rig.run("Stop", prompt_id=own_turn)
+
+        size = stop_rig.writer.path.stat().st_size
+        assert stop_rig.turn_end.read_text(encoding="ascii") == str(size)
+
+    def test_a_prompt_id_missing_from_the_transcript_uses_the_newest_turn_end(
+        self, stop_rig: StopRig
+    ) -> None:
+        stop_rig.writer.human("review the plan")
+        stop_rig.writer.assistant("done")
+
+        stop_rig.run("Stop", prompt_id="not-in-the-transcript")
+
+        size = stop_rig.writer.path.stat().st_size
+        assert stop_rig.turn_end.read_text(encoding="ascii") == str(size)
 
     def test_a_late_stop_keeps_a_marker_no_assistant_line_follows(self, stop_rig: StopRig) -> None:
         stop_rig.writer.human("review the plan")

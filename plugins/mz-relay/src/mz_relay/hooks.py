@@ -60,6 +60,8 @@ class HookInput:
     tool_name: str | None
     event: str
     source: str | None
+    # The turn's id; Claude Code sends it to every hook from about 2.1.3xx on.
+    prompt_id: str | None = None
 
 
 def parse_hook_input(raw: str) -> HookInput:
@@ -89,6 +91,7 @@ def parse_hook_input(raw: str) -> HookInput:
         tool_name=_optional_text(data, "tool_name"),
         event=event,
         source=_optional_text(data, "source"),
+        prompt_id=_optional_text(data, "prompt_id"),
     )
 
 
@@ -198,7 +201,7 @@ class Waiter:
             marker.unlink(missing_ok=True)
             return
         transcript = Transcript(hook.transcript_path)
-        end = transcript.turn_end()
+        end = transcript.turn_end(hook.prompt_id)
         if end is None:
             log.debug("no turn has ended yet in the transcript of session %s", sid)
         else:

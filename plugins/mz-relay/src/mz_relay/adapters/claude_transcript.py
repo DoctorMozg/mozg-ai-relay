@@ -107,6 +107,12 @@ def _ends_turn(line: Mapping[str, object]) -> bool:
     return kind == "assistant" or (kind == "system" and line.get("subtype") in TURN_END_SUBTYPES)
 
 
+def _prompt_id(line: Mapping[str, object]) -> str | None:
+    """The turn a user line belongs to; prompts and tool results carry it, replies do not."""
+    owner = line.get("promptId")
+    return owner if line.get("type") == "user" and isinstance(owner, str) else None
+
+
 def _peer_turn_newest_first(lines: Iterable[Mapping[str, object]]) -> bool:
     for line in lines:
         classified = classify(line)
@@ -184,9 +190,27 @@ class Transcript:
     def assistant_since(self, offset: int) -> bool:
         return any(line.get("type") == "assistant" for _, line in self.lines_back(offset))
 
-    def turn_end(self) -> int | None:
-        """The offset just past the last line that ends a turn; None before any turn has ended."""
-        return next((end for end, line in self.lines_back(0) if _ends_turn(line)), None)
+    def turn_end(self, prompt_id: str | None = None) -> int | None:
+        """The offset just past the last line that ends a turn; None before any turn has ended.
+        With the Stop hook's prompt_id it is that turn's end, even when later turns follow."""
+        if prompt_id is None:
+            return next((end for end, line in self.lines_back(0) if _ends_turn(line)), None)
+        newest: int | None = None
+        # The newest turn-ending line older than every later turn's first line.
+        candidate: int | None = None
+        for end, line in self.lines_back(0):
+            if _ends_turn(line):
+                newest = end if newest is None else newest
+                candidate = end if candidate is None else candidate
+                continue
+            owner = _prompt_id(line)
+            if owner == prompt_id:
+                return candidate
+            # A post that joined a running turn starts no turn of its own.
+            if owner is not None and not classify(line).joined:
+                candidate = None
+        log.debug("prompt %s is not in %s; using the newest turn end", prompt_id, self.path)
+        return newest
 
 
 class TranscriptWatcher:

@@ -108,7 +108,7 @@ class GateRig:
         decision: dict[str, object] | None = gate.decide(hook)
         return decision
 
-    def stop(self) -> None:
+    def stop(self, prompt_id: str | None = None) -> None:
         """Runs the real Stop hook while a SessionStart waiter holds the session lock."""
         hook = HookInput(
             session_id=SESSION_ID,
@@ -117,6 +117,7 @@ class GateRig:
             tool_name=None,
             event="Stop",
             source=None,
+            prompt_id=prompt_id,
         )
         launcher = launcher_for(self.paths, NoSpawn())
         waiter = Waiter(self.paths, launcher, env=self.env, clock=SystemClock())
@@ -346,6 +347,15 @@ class TestStopHookBookkeeping:
         rig.mark_rewake()
         rig.write([meta])
         rig.stop()
+        assert rig.decide("Bash") == denial("Bash")
+
+    def test_a_peer_turn_that_replied_before_a_late_stop_hook_stays_gated(
+        self, rig: GateRig
+    ) -> None:
+        rig.write([human])
+        user_turn = rig.writer.prompt_id
+        rig.write([assistant, peer, assistant])
+        rig.stop(prompt_id=user_turn)
         assert rig.decide("Bash") == denial("Bash")
 
     def test_a_stop_after_the_peer_turns_last_reply_lifts_the_gate(self, rig: GateRig) -> None:

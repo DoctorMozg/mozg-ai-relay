@@ -425,7 +425,7 @@ $ mz-relay log --context 01J... --limit 20
 
 What each mechanism leaves open:
 
-- **Claude.** Read-only deliveries wait while the session is busy (native path: deferred, rewake path: the waiter leases only while idle). A peer post rarely joins a user turn. If one does, the rest of that user turn is read-only until the user types. An async `Stop` that starts after the next peer turn has already written an assistant line records a turn end past that peer line, so that turn runs ungated (UNTESTED live: a full fix needs a turn id from Claude). In an SDK-driven session (`claude -p`) only `Stop` lifts the gate.
+- **Claude.** Read-only deliveries wait while the session is busy (native path: deferred, rewake path: the waiter leases only while idle). A peer post rarely joins a user turn. If one does, the rest of that user turn is read-only until the user types. `Stop` records the end of its own turn, found by the `prompt_id` Claude Code passes to hooks (2.1.325 sends it), so a `Stop` that runs late, after the next peer turn has replied, leaves that turn gated. A Claude Code without `prompt_id` falls back to the newest turn end, which a late `Stop` can place past the next peer line. In an SDK-driven session (`claude -p`) only `Stop` lifts the gate.
 - **Pi.** `message_start` is documented only for user, assistant and tool-result messages, so it is not used. `live_pi` shows `context` firing for a follow-up that lands during a user run (Pi 1.5.2).
 - **OpenCode.** None known.
 - **Codex.** All turns are limited only if the user set the sandbox. `doctor` checks the top-level `sandbox_mode` key and warns about each `<name>.config.toml` profile that sets another mode, since `codex --profile <name>` applies it on top. A trusted project's `.codex/config.toml` can override it too and is not checked.
@@ -603,7 +603,7 @@ Logs are `relayd.log` and `hooks.log` in the state directory (`~/.local/state/mz
 
 Five claims remain open:
 
-- **Late async `Stop` on Claude.** An async `Stop` that starts after the next peer turn has already written an assistant line leaves that peer turn ungated (see [Read-only roles](#read-only-roles)). No live test reproduces the timing, and a full fix needs a turn id from Claude.
+- **Late async `Stop` on Claude.** A `Stop` that runs after the next peer turn has replied records its own turn's end by `prompt_id` (see [Read-only roles](#read-only-roles)). Unit tests cover it with transcript lines shaped like a 2.1.325 probe. No live test reproduces the timing.
 - **Account data terms.** The consumer and commercial data terms in the [threat model](#threat-model) come from the project research and have not been re-checked against Anthropic's current terms.
 - **Web UI launch and reconnect.** `tests/test_ui_server.py` covers the HTTP layer and `node --test` covers the front end's pure helpers. A manual pass in headless Chrome on 2026-11-14 checked sign-in, the live stream, Approve, the composer, the board and notes tabs and dark mode, but no automated test drives the page. The browser launch from `mz-relay ui` and the live stream's reconnect have not been run.
 - **Extension tools outside Claude.** `make live-board` passed on two Claude accounts on 2026-11-14. Codex, Pi and OpenCode expose the tools through the same registration path, which only unit tests cover (Pi: `adapters/pi/mz_relay_tools.test.ts`).
