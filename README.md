@@ -1,6 +1,15 @@
-# mz-relay
+<p align="center"><img src="assets/hero/mozg-ai-relay.webp" alt="mozg-ai-relay: agents message each other across harnesses" width="100%"></p>
 
-Agents in Claude Code (one or more accounts), Codex, Pi and OpenCode send each other messages by roster name. A local broker, `relayd`, holds the roster, queues every message in SQLite, applies the guards and wakes the receiving agent by whatever channel its harness offers.
+# mozg-ai-relay
+
+<p align="center">
+  <img src="https://img.shields.io/badge/version-0.1.0-blue" alt="version 0.1.0">
+  <img src="https://img.shields.io/badge/python-3.12%2B-3776ab" alt="Python 3.12 or newer">
+  <img src="https://img.shields.io/badge/platform-Linux-lightgrey" alt="Linux">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license">
+</p>
+
+A Claude Code plugin marketplace with one plugin, `mz-relay`. Agents in Claude Code (one or more accounts), Codex, Pi and OpenCode send each other messages by roster name. A local broker, `relayd`, holds the roster, queues every message in SQLite, applies the guards and wakes the receiving agent by whatever channel its harness offers.
 
 ```text
 architect (Claude, personal) ── send(to="builder", kind="request", body="...") ──► relayd
@@ -9,6 +18,34 @@ builder   (Claude, corporate) ◄── "[mz-relay] Peer message from architect 
 
 Every delivered message starts with a header that names the sender and says the text is untrusted peer input, not the user's approval. Messages from a `corporate` agent to a `personal` one are held until the user approves them in a terminal.
 
+- **One roster, four harnesses.** Claude Code on several accounts, Codex, Pi and OpenCode reach each other by name, role and description from one TOML file.
+- **No per-message prompt.** A message wakes the receiver through its harness: the Claude inbox socket or wait hook, `codex queue`, or the Pi and OpenCode adapters.
+- **Guards in one place.** Allowed routes, a hop budget, a turn cap per context, an inbox cap and a TTL all live in `relayd`, so a client cannot skip them.
+- **Corporate to personal is held.** Such messages wait for `mz-relay approve <id>` in a terminal, and agents cannot approve.
+- **Read-only peers.** A `read_only` agent is limited to read tools while it serves a peer, on a best-effort basis per harness: a tool gate in Claude and Pi, a deny-permission agent in OpenCode, and the sandbox setting in Codex.
+- **Standard library only.** The runtime is Python 3.12 with no dependencies, and the TS adapters need no npm packages.
+
+## Quick start
+
+```bash
+git clone https://github.com/DoctorMozg/mozg-ai-relay.git && cd mozg-ai-relay
+ln -s "$PWD/plugins/mz-relay/bin/mz-relay" ~/.local/bin/mz-relay
+
+mkdir -p ~/.config/mz-relay
+cp plugins/mz-relay/data/roster.example.toml ~/.config/mz-relay/roster.toml   # then edit it
+mz-relay roster check
+
+claude plugin marketplace add "$PWD"
+CLAUDE_CONFIG_DIR=~/.claude             claude plugin install mz-relay@mz-relay --config relay_name=architect
+CLAUDE_CONFIG_DIR=~/claude-corp/.claude claude plugin install mz-relay@mz-relay --config relay_name=builder
+mz-relay doctor
+```
+
+Start both Claude sessions and ask the architect to send the builder a request. The builder wakes with the message. With the hold on, a reply from the corporate builder to the personal architect waits for `mz-relay approve <id>`. Codex, Pi and OpenCode are set up as described in [Install](#install).
+
+## Contents
+
+- [Quick start](#quick-start)
 - [Architecture](#architecture)
 - [Tested versions](#tested-versions)
 - [Install](#install)
