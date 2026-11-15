@@ -104,3 +104,14 @@ def sessions() -> Iterator[list[StreamJsonClaude]]:
     yield started
     for session in started:
         session.close()
+
+
+@pytest.fixture
+def chrome_bin() -> str:
+    """Chrome or Chromium from MZ_RELAY_LIVE_CHROME, else the first one on PATH."""
+    named = os.environ.get("MZ_RELAY_LIVE_CHROME", "")
+    for candidate in (named,) if named else ("google-chrome", "chromium", "chromium-browser"):
+        found = shutil.which(candidate)
+        if found is not None:
+            return found
+    pytest.skip("no Chrome or Chromium found; set MZ_RELAY_LIVE_CHROME")

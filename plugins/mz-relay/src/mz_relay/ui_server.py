@@ -49,6 +49,10 @@ ERROR_STATUS = {
     "not_held": HTTPStatus.CONFLICT,
     "not_allowed": HTTPStatus.FORBIDDEN,
 }
+SIGNED_IN = (
+    '<!doctype html><meta charset=utf-8><meta http-equiv="refresh" content="0;url=/">'
+    "<title>mz-relay</title>"
+)
 NOT_SIGNED_IN = (
     "<!doctype html><meta charset=utf-8><title>mz-relay</title>"
     "<p>Open the address that <code>mz-relay ui</code> printed in its terminal.</p>"
@@ -226,16 +230,19 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if not hmac.compare_digest(offered.encode(), self.server.cfg.token.encode()):
             raise _Refused(HTTPStatus.UNAUTHORIZED, "wrong token")
         log.info("browser signed in to the UI")
-        # The redirect drops the token from the address bar and the history.
-        self.send_response(HTTPStatus.SEE_OTHER)
+        # A 303 here, inside the launch page's cross-site navigation, would arrive without the
+        # Strict cookie. A refresh is same-origin and replaces the token entry in the history.
+        body = SIGNED_IN.encode()
+        self.send_response(HTTPStatus.OK)
         self.send_header(
             "Set-Cookie",
             f"{self.server.cookie}={self.server.cfg.token}; HttpOnly; SameSite=Strict; Path=/",
         )
-        self.send_header("Location", "/")
-        self.send_header("Content-Length", "0")
+        self.send_header("Content-Type", CONTENT_TYPES[".html"])
+        self.send_header("Content-Length", str(len(body)))
         self._security_headers()
         self.end_headers()
+        self.wfile.write(body)
 
     def _read_json(self) -> dict[str, object]:
         if self.headers.get_content_type() != "application/json":

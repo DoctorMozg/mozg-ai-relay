@@ -1,4 +1,4 @@
-LIVE := claude codex pi opencode demo board
+LIVE := claude codex pi opencode demo board ui
 
 .PHONY: help fmt lint types test js validate hooks static check $(LIVE:%=live-%)
 

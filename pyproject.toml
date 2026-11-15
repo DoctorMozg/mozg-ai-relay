@@ -16,7 +16,7 @@ dev = [
 
 [tool.pytest.ini_options]
 # Plugins from the global environment cost startup time per process; the suites need only xdist.
-addopts = "--disable-plugin-autoload -p xdist -ra --strict-config --strict-markers --import-mode=importlib -m 'not live_claude and not live_codex and not live_pi and not live_opencode and not live_demo and not live_board'"
+addopts = "--disable-plugin-autoload -p xdist -ra --strict-config --strict-markers --import-mode=importlib -m 'not live_claude and not live_codex and not live_pi and not live_opencode and not live_demo and not live_board and not live_ui'"
 pythonpath = ["tools", "tests", "plugins/mz-relay/src"]
 # Each suite needs a process of its own (see the Makefile), so a bare pytest runs the repo tests.
 testpaths = ["tests"]
@@ -27,6 +27,7 @@ markers = [
   "live_opencode: runs the real opencode CLI; excluded from make check",
   "live_demo: runs the real Claude and Codex demo; excluded from make check",
   "live_board: two real Claude accounts use the board and notes; excluded from make check",
+  "live_ui: headless Chrome drives `mz-relay ui` through a relayd restart; excluded from make check",
 ]
 
 [tool.ruff]

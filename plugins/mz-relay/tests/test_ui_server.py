@@ -153,6 +153,9 @@ def board_ui(relay_paths: Paths) -> Iterator[Ui]:
         yield live
 
 
+REFRESH_TO_ROOT = b'<meta http-equiv="refresh" content="0;url=/">'
+
+
 class TestSignIn:
     def test_the_token_trades_for_a_strict_httponly_cookie_and_leaves_the_address(
         self, ui: Ui
@@ -160,8 +163,10 @@ class TestSignIn:
         resp = ui.request("GET", f"/?token={ui.server.cfg.token}")
 
         cookie = resp.getheader("Set-Cookie") or ""
-        assert resp.status == 303
-        assert resp.getheader("Location") == "/"
+        # A same-origin refresh, not a 303: a redirect in a navigation the file:// launch page
+        # started is cross-site, so the browser would leave the Strict cookie off it.
+        assert resp.status == 200
+        assert REFRESH_TO_ROOT in resp.read()
         assert cookie.startswith(f"mzr_ui_{ui.server.port}=")
         assert {"HttpOnly", "SameSite=Strict", "Path=/"} <= {
             part.strip() for part in cookie.split(";")
