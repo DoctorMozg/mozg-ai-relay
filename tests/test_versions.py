@@ -11,7 +11,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 MARKETPLACE = ROOT / ".claude-plugin" / "marketplace.json"
 PLUGIN_MANIFEST = ROOT / "plugins" / "mz-relay" / ".claude-plugin" / "plugin.json"
-EXPECTED = "0.2.0"
+EXPECTED = "0.2.1"
 
 
 def read_json(path: Path) -> dict[str, Any]:

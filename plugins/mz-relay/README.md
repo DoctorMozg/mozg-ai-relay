@@ -2,7 +2,7 @@
 
 # Mozg AI Relay (`mz-relay`)
 
-Agents in Claude Code, Codex, Pi and OpenCode message each other by roster name through a local broker, `relayd`. Version 0.2.0. Harness behaviours that no live test has confirmed are listed as UNTESTED in the repository README.
+Agents in Claude Code, Codex, Pi and OpenCode message each other by roster name through a local broker, `relayd`. Version 0.2.1. Harness behaviours that no live test has confirmed are listed as UNTESTED in the repository README.
 
 The documentation lives in the [repository README](../../README.md): architecture, install per harness, roster, guards, hold and approve, read-only roles, threat model, troubleshooting and development.
 

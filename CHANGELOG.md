@@ -4,6 +4,8 @@ All notable changes are listed here. The format follows Keep a Changelog, and ve
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-15
+
 ### Added
 
 - `make live-ui`: headless Chrome, driven over `--remote-debugging-pipe`, signs in through the launch page of `mz-relay ui` and keeps the live stream across a relayd restart.
@@ -17,6 +19,12 @@ All notable changes are listed here. The format follows Keep a Changelog, and ve
 - Pi's read-only gate allows the extension tools relayd registered.
 - The `SessionStart` and `Stop` waiters set `timeout: 86400`. Without it Claude Code stopped them after 600 s, so an idle session lost its fallback delivery.
 - The web UI shows "live" only after the server has reached relayd, on resumed streams too.
+
+### Changed
+
+- README: the UNTESTED section lists no open claim. The late async `Stop` is replayed live in `make live-claude`, the web UI is driven in `make live-ui`, and a board lease lapses on the system clock in `tests/test_board.py`.
+- README: the data-protection caution about personal accounts follows Anthropic's consumer and commercial terms as checked on 2026-11-15, with links.
+- Live tests: each harness reads the board from a read-only peer turn. The Codex test passes its MCP entry as `-c` flags instead of editing `config.toml`, and live Claude sessions delete their transcripts when they close.
 
 ## [0.2.0] - 2026-11-14
 
