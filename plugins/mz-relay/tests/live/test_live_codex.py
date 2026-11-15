@@ -1,13 +1,14 @@
 """Live smoke: relayd queues a peer message into a real Codex thread and finds it in the rollout.
 Run by hand: MZ_RELAY_LIVE_CODEX_HOME=<logged-in codex home> uv run make live-codex
 Codex runs in that real CODEX_HOME, with the mz-relay snippet passed as `-c` flags rather than
-written to its config.toml; the test deletes the thread it renamed afterwards."""
+written to its config.toml; the test deletes every thread started in its work dir afterwards."""
 
 from __future__ import annotations
 
 import contextlib
 import secrets
 import sys
+import time
 import tomllib
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from live_rig import (
     Architect,
     RelayRows,
     TmuxPane,
+    codex_threads_in,
     delete_codex_thread,
 )
 from relay_rig import PLUGIN, paths_in, running_daemon, wait_until
@@ -120,8 +122,12 @@ def test_a_peer_message_is_queued_into_a_renamed_codex_thread(
             return False
         return True
 
-    def delete_thread() -> None:
-        for thread_id in thread_ids:
+    started = time.time()
+
+    def delete_threads() -> None:
+        # Besides the renamed thread, Codex starts review threads of its own in the work dir.
+        in_work = codex_threads_in(live_codex_home, work, started)
+        for thread_id in dict.fromkeys([*thread_ids, *in_work]):
             delete_codex_thread(codex_bin, thread_id, env)
 
     with (
@@ -129,7 +135,7 @@ def test_a_peer_message_is_queued_into_a_renamed_codex_thread(
         contextlib.ExitStack() as stack,
     ):
         # Registered first, so it runs last: after the pane has closed Codex.
-        stack.callback(delete_thread)
+        stack.callback(delete_threads)
         argv = [codex_bin, *CODEX_ARGV[1:], *snippet_flags(name)]
         pane = stack.enter_context(TmuxPane(tmux_bin, argv, cwd=work, env=env))
         rows = stack.enter_context(RelayRows(paths.db))

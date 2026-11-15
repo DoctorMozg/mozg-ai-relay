@@ -11,7 +11,7 @@ from typing import Protocol, assert_never
 from mz_relay.clock import Clock
 from mz_relay.envelope import Status, render_text
 from mz_relay.errors import BindingError
-from mz_relay.roster import AgentSpec, Harness, Roster
+from mz_relay.roster import USER_NAME, AgentSpec, Harness, Roster
 from mz_relay.store import (
     UNREACHABLE_PREFIX,
     Registration,
@@ -101,6 +101,10 @@ def unreachable_reason(to: str, detail: str) -> str:
 def _same_route(a: Registration, b: Registration) -> bool:
     # last_seen and online change on every heartbeat; only these say where delivery goes.
     return (a.token, a.delivery_mode, a.binding) == (b.token, b.delivery_mode, b.binding)
+
+
+def sender_gone_reason(source: str) -> str:
+    return f"sender {source} is no longer in the roster"
 
 
 def retry_reason(attempt: int, detail: str) -> str:
@@ -212,6 +216,9 @@ class DeliveryEngine:
             return 0
 
     def _deliver(self, roster: Roster, adapter: HarnessAdapter, row: StoredMessage) -> int:
+        if row.envelope.source != USER_NAME and row.envelope.source not in roster.agents:
+            self._drop_orphan(row)
+            return 1
         attempt = self._bind(roster, adapter, row)
         if attempt is None:
             return 1
@@ -372,6 +379,13 @@ class DeliveryEngine:
         change = StatusChange(Status.QUEUED, next_attempt_at=self._deps.clock.now())
         if self._write(row, change, Status.QUEUED, "re-arm after parking"):
             log.info("%s to %s registered while parking; re-armed", env.id, env.to)
+
+    def _drop_orphan(self, row: StoredMessage) -> None:
+        # The frame names the sender's role, so no text can be rendered; retrying never helps.
+        env = row.envelope
+        change = StatusChange(Status.UNDELIVERABLE, reason=sender_gone_reason(env.source))
+        if self._write(row, change, Status.QUEUED, "sender left the roster"):
+            log.warning("%s to %s is undeliverable: %s left the roster", env.id, env.to, env.source)
 
     def _defer_faulty(self, row: StoredMessage, exc: Exception) -> None:
         env = row.envelope

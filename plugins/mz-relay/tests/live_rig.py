@@ -3,6 +3,7 @@ a tools-only peer, and one Store reader for the rows the tests wait on."""
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import shlex
@@ -58,6 +59,30 @@ def delete_codex_thread(codex_bin: str, thread_id: str, env: Mapping[str, str]) 
         return
     if done.returncode != 0:
         warnings.warn(f"codex delete {thread_id} failed: {done.stderr.strip()}", stacklevel=2)
+
+
+def codex_threads_in(codex_home: Path, cwd: Path, since: float) -> list[str]:
+    """Ids of the threads whose rollout started in `cwd` and changed after `since` (epoch s),
+    including the approval-review threads Codex starts on its own."""
+    found: list[str] = []
+    for path in (codex_home / "sessions").glob("*/*/*/rollout-*.jsonl"):
+        try:
+            if path.stat().st_mtime < since:
+                continue
+            with path.open(encoding="utf-8") as rollout:
+                first = rollout.readline()
+        except FileNotFoundError:
+            continue  # deleted by Codex between the glob and the read
+        try:
+            meta = json.loads(first)
+        except json.JSONDecodeError:
+            continue  # a first line still being written
+        payload = meta.get("payload") if isinstance(meta, dict) else None
+        if isinstance(payload, dict) and payload.get("cwd") == str(cwd):
+            thread_id = payload.get("id")
+            if isinstance(thread_id, str):
+                found.append(thread_id)
+    return found
 
 
 class TmuxPane:

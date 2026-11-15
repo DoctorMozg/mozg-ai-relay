@@ -278,7 +278,7 @@ Each agent also receives a brief (MCP `instructions`, or a system-prompt additio
 
 With extensions enabled, an `Extensions:` list follows the rules, one line per extension, on how to use the tools the agent's role sees (see [Writing an extension](#writing-an-extension)).
 
-Delivery is attempted up to three times (delays 0 s, 2 s, 8 s) before a message is `undeliverable`. `inbox` also lists what the agent sent and its status, plus notices about its messages that ended undelivered, expired or denied. A recipient with no wake-up channel (pull-only) reads its messages on its next `inbox` call.
+Delivery is attempted up to three times (delays 0 s, 2 s, 8 s) before a message is `undeliverable`. A queued message whose sender has left the roster is `undeliverable` at once. `inbox` also lists what the agent sent and its status, plus notices about its messages that ended undelivered, expired or denied. A recipient with no wake-up channel (pull-only) reads its messages on its next `inbox` call.
 
 ## Guards
 

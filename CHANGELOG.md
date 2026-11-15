@@ -4,6 +4,11 @@ All notable changes are listed here. The format follows Keep a Changelog, and ve
 
 ## [Unreleased]
 
+### Fixed
+
+- A queued message whose sender has left the roster is now `undeliverable` at once, with the reason "sender <name> is no longer in the roster". It used to be retried every 2 s until its ttl ran out.
+- `make live-codex` also deletes the approval-review threads Codex starts in the test's work dir, so a run no longer leaves sessions in the real `CODEX_HOME`.
+
 ## [0.2.1] - 2026-11-15
 
 ### Added

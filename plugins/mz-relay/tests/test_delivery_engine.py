@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 
 import pytest
 from mz_relay.delivery import DeliveryBinding, DeliveryJob, Outcome
@@ -381,3 +382,29 @@ class TestParkRace:
         parked = rig.row(msg_id)
         assert parked.status == Status.QUEUED
         assert parked.next_attempt_at is None, "a last_seen bump re-armed the pull-only row"
+
+
+class TestDepartedSender:
+    def test_a_queued_row_from_a_sender_no_longer_in_the_roster_is_undeliverable_at_once(
+        self, make_rig: MakeRig
+    ) -> None:
+        adapter = FakeAdapter()
+        rig = make_rig(adapter)
+        token = rig.register("bob", BOB_SOCKET)
+        msg_id = rig.queue()
+        agents = {name: spec for name, spec in rig.roster.agents.items() if name != "alice"}
+        rig.roster = replace(rig.roster, agents=agents)
+
+        handled = rig.engine.run_once(OPENCODE)
+
+        assert handled == 1
+        row = rig.row(msg_id)
+        assert (row.status, row.reason) == (
+            Status.UNDELIVERABLE,
+            "sender alice is no longer in the roster",
+        )
+        assert adapter.delivered == []
+        assert rig.online(token), "bob's registration went offline over alice's departure"
+        assert rig.engine.next_wakeup(OPENCODE) is None, "the row is still scheduled for retry"
+        # Should alice come back, her inbox carries the notice.
+        assert [r.envelope.id for r in rig.store.notices_for("alice")] == [msg_id]
