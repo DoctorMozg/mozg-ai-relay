@@ -20,6 +20,10 @@ def load(relative: str) -> Message:
     return loaded
 
 
+# A day: an idle session keeps its waiter; a probe saw 86400 honoured past 600 s.
+WAITER_TIMEOUT_S = 86_400
+
+
 @pytest.fixture
 def hooks() -> Message:
     hooks: Message = load("hooks/hooks.json")["hooks"]
@@ -70,6 +74,11 @@ class TestHooksJson:
         entry = only_command(hooks["Stop"])
         assert entry["command"] == f"{LAUNCHER} hook wait Stop"
         assert entry["asyncRewake"] is True
+
+    @pytest.mark.parametrize("event", ["SessionStart", "Stop"])
+    def test_a_waiter_outlives_the_600_s_default_timeout(self, hooks: Message, event: str) -> None:
+        # Claude Code 2.1.325 sends SIGTERM to an asyncRewake hook at its timeout, 600 s if unset.
+        assert only_command(hooks[event])["timeout"] == WAITER_TIMEOUT_S
 
     def test_pre_tool_use_runs_the_gate_synchronously_on_every_tool(self, hooks: Message) -> None:
         groups = hooks["PreToolUse"]
