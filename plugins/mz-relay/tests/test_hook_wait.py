@@ -305,6 +305,18 @@ class TestSingleton:
 
 
 class TestWaiterExits:
+    def test_session_start_with_native_messaging_exits_at_once(self, make_hooks: MakeHooks) -> None:
+        hooks = make_hooks()
+        env = {"CLAUDE_CONFIG_DIR": str(hooks.fake.config_dir), "MZ_RELAY_NAME": "cc"}
+
+        waiter = hooks.waiter(env={**env, "CLAUDE_CODE_MESSAGING_SOCKET": "/nonexistent.sock"})
+
+        assert waiter.exit_code() == 0
+        assert waiter.stderr() == ""
+        assert not hooks.waiter_registered()
+        # The lock is free again, so the Stop waiter of the first turn can serve FALLBACK.
+        hooks.ready_waiter()
+
     def test_waiter_exits_when_the_session_pid_dies(self, make_hooks: MakeHooks) -> None:
         hooks = make_hooks()
         waiter = hooks.ready_waiter()

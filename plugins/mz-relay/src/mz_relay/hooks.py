@@ -46,6 +46,8 @@ MAX_SESSION_MISSES = 2
 # relayd refuses these for good, so retrying the registration cannot help.
 REFUSED_CODES = IdentityError.CODES | {BindingError.CODE}
 EXIT_QUIET = 0
+# Set in hooks of sessions whose Claude Code has the inbox socket.
+NATIVE_MESSAGING_ENV = "CLAUDE_CODE_MESSAGING_SOCKET"
 # asyncRewake: exit 2 wakes Claude with stderr as the prompt.
 EXIT_WAKE = 2
 USAGE = "usage: mz-relay hook wait <SessionStart|Stop> | mz-relay hook gate"
@@ -184,6 +186,11 @@ class Waiter:
         if event == "Stop":
             # Before the lock: the SessionStart waiter usually holds it for the whole session.
             self._record_turn_end(hook)
+        elif NATIVE_MESSAGING_ENV in self._env:
+            # Claude Code sometimes fails to background this hook and blocks startup on it;
+            # native delivery covers the first turn and the Stop waiters cover FALLBACK.
+            log.info("session %s has native messaging; SessionStart waiter exits", hook.session_id)
+            return EXIT_QUIET
         lock = self._try_lock(hook.session_id)
         if lock is None:
             log.info("%s waiter for session %s: another waiter is running", event, hook.session_id)
