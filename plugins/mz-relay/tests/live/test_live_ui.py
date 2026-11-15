@@ -100,9 +100,11 @@ def test_the_ui_opens_signs_in_and_reconnects_after_a_relayd_restart(
         before = daemon_pid(paths.socket)
         stop_daemon(paths.socket)
         assert wait_until(lambda: chrome.evaluate(STREAM) == "reconnecting", START_S, POLL_S)
-        # The server starts a new relayd when the browser's EventSource comes back.
-        assert wait_until(lambda: daemon_pid(paths.socket) not in (None, before), START_S, POLL_S)
+        # The server starts a new relayd when the browser's EventSource comes back, and the
+        # page says "live" only after that relayd has answered.
         assert wait_until(lambda: chrome.evaluate(STREAM) == "live", START_S, POLL_S)
+        after = daemon_pid(paths.socket)
+        assert after not in (None, before), f"relayd pid {before} -> {after}"
 
         send_as_user(paths.socket, f"SECOND-{nonce}")
         assert wait_until(lambda: shows(chrome, f"SECOND-{nonce}"), START_S, POLL_S)

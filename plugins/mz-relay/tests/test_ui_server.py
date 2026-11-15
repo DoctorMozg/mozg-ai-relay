@@ -347,6 +347,26 @@ class TestEventStream:
         assert [int(e["id"]) for e in replayed] == sorted(int(e["id"]) for e in replayed)
         stream.close()
 
+    def test_a_resumed_stream_says_hello_once_relayd_answers(self, ui: Ui) -> None:
+        head = ui.query("watch", {})["last_seq"]
+
+        stream = ui.get("/api/events", headers={"Last-Event-ID": str(head)})
+        first = read_event(stream)
+
+        # The page shows "live" on hello, so an open stream without relayd shows nothing.
+        assert (first["event"], first["id"]) == ("hello", str(head))
+        stream.close()
+
+    def test_without_relayd_the_stream_sends_an_error_and_no_hello(
+        self, relay_paths: Paths
+    ) -> None:
+        with serving_ui(relay_paths) as live:
+            stream = live.get("/api/events", headers={"Last-Event-ID": "7"})
+            first = read_event(stream)
+
+        assert first["event"] == "relay-error"
+        stream.close()
+
 
 class TestMessageOp:
     def test_it_returns_the_body_to_the_cli(self, rig: ServiceRig) -> None:

@@ -294,7 +294,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         with closing(self.server.cfg.connect()) as relay:
             if since is None:
                 since = int(str(relay.call("watch", {})["last_seq"]))
-                self._event("hello", {"last_seq": since}, since)
+            # Only now is relayd known to answer; the page shows "live" on this event.
+            self._event("hello", {"last_seq": since}, since)
             while True:
                 page = relay.call(
                     "watch", {"since": since, "timeout_s": KEEPALIVE_S}, timeout_s=KEEPALIVE_S + 5

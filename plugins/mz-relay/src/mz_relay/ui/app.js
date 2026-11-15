@@ -287,11 +287,12 @@ function App() {
       bumpExt();
     });
     source.addEventListener("relay-error", (e) => setError(JSON.parse(e.data).error.message));
-    source.onopen = () => {
+    // Not onopen: the server sends hello only once relayd has answered.
+    source.addEventListener("hello", () => {
       setStream("live");
       reload();
       bumpExt();
-    };
+    });
     source.onerror = () => setStream("reconnecting");
     return () => source.close();
   }, []);

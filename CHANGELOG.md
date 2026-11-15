@@ -15,6 +15,8 @@ All notable changes are listed here. The format follows Keep a Changelog, and ve
 - Claude startup could hang on the `SessionStart` waiter when Claude Code failed to background it; with native messaging the waiter now exits at once.
 - A late async `Stop` records its own turn's end by `prompt_id`, so the next peer turn stays gated.
 - Pi's read-only gate allows the extension tools relayd registered.
+- The `SessionStart` and `Stop` waiters set `timeout: 86400`. Without it Claude Code stopped them after 600 s, so an idle session lost its fallback delivery.
+- The web UI shows "live" only after the server has reached relayd, on resumed streams too.
 
 ## [0.2.0] - 2026-11-14
 
