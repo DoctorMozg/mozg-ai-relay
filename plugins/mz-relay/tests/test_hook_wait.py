@@ -171,6 +171,17 @@ class HookRig:
         assert got is not None, f"row {msg_id} missing"
         return got
 
+    def diagnose(self, waiter: WaiterProc, msg_id: str) -> str:
+        """What a failed rewake left behind; the relay home is gone once the test ends."""
+        row = self.store.get("sender", msg_id)
+        state = (row.status, row.via) if row else "no row"
+        log = self.paths.hooks_log
+        tail = log.read_text(encoding="utf-8").splitlines()[-20:] if log.is_file() else []
+        reg = self.store.latest_delivery_registration("cc")
+        return "\n".join(
+            [f"row: {state}", f"registration: {reg}", f"stderr: {waiter.stderr()!r}", *tail]
+        )
+
     @property
     def marker(self) -> Path:
         return self.paths.marker_dir / self.fake.session_id
@@ -242,7 +253,7 @@ class TestRewakeDelivery:
 
         msg_id = hooks.send()
 
-        assert waiter.exit_code() == 2
+        assert waiter.exit_code() == 2, hooks.diagnose(waiter, msg_id)
         assert waiter.stderr().startswith(HEADER)
         assert (hooks.row(msg_id).status, hooks.row(msg_id).via) == (Status.DELIVERED, "rewake")
 

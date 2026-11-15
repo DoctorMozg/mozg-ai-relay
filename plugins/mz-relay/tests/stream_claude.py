@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import shutil
 import subprocess
 import threading
 import time
@@ -26,6 +27,8 @@ class StreamJsonClaude:
         self._log = log.open("wb")
         # Claude's own debug log: the only record of where a session stalls before its init event.
         self.debug_log = log.with_suffix(".debug")
+        config_dir = env.get("CLAUDE_CONFIG_DIR")
+        self._projects = Path(config_dir) / "projects" if config_dir else None
         argv = [
             claude,
             "-p",
@@ -118,5 +121,16 @@ class StreamJsonClaude:
     def close(self) -> None:
         try:
             reap(self.proc)
+            self._forget_project()
         finally:
             self._log.close()
+
+    def _forget_project(self) -> None:
+        """Deletes this session's project folder, so live runs leave no transcripts behind."""
+        sid = self.session_id()
+        if sid is None or self._projects is None:
+            return
+        for transcript in self._projects.glob(f"*/{sid}.jsonl"):
+            # Only the folder Claude names after a /tmp/mzr-* working directory, never a real one.
+            if transcript.parent.name.startswith("-tmp-mzr-"):
+                shutil.rmtree(transcript.parent)

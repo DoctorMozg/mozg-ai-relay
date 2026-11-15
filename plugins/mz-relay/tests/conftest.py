@@ -53,10 +53,19 @@ def relay_home() -> Iterator[Path]:
     shutil.rmtree(home, ignore_errors=True)
 
 
+class RelayEnv(dict[str, str]):
+    """An environment whose repr names keys only, since pytest prints test arguments on failure."""
+
+    def __repr__(self) -> str:
+        return f"RelayEnv(<{len(self)} variables, values hidden>: {', '.join(sorted(self))})"
+
+
 @pytest.fixture
 def relay_env(relay_home: Path) -> dict[str, str]:
     """The test process environment without agent-session variables, pointed at relay_home."""
-    env = {key: value for key, value in os.environ.items() if not key.startswith(FOREIGN_PREFIXES)}
+    env = RelayEnv(
+        (key, value) for key, value in os.environ.items() if not key.startswith(FOREIGN_PREFIXES)
+    )
     env["MZ_RELAY_HOME"] = str(relay_home)
     env["MZ_RELAY_PYTHON"] = sys.executable
     return env
