@@ -4,6 +4,18 @@ All notable changes are listed here. The format follows Keep a Changelog, and ve
 
 ## [Unreleased]
 
+### Added
+
+- `make live-ui`: headless Chrome, driven over `--remote-debugging-pipe`, signs in through the launch page of `mz-relay ui` and keeps the live stream across a relayd restart.
+- Agents get a short brief of each enabled extension's tools in their relay instructions.
+
+### Fixed
+
+- Web UI sign-in from the launch page: the token page now sets the cookie and refreshes to `/` instead of redirecting, since a redirect inside the `file://` page's navigation arrived without the `Strict` cookie.
+- Claude startup could hang on the `SessionStart` waiter when Claude Code failed to background it; with native messaging the waiter now exits at once.
+- A late async `Stop` records its own turn's end by `prompt_id`, so the next peer turn stays gated.
+- Pi's read-only gate allows the extension tools relayd registered.
+
 ## [0.2.0] - 2026-11-14
 
 ### Added

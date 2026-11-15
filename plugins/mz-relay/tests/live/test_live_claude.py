@@ -3,13 +3,16 @@ Run by hand: MZ_RELAY_LIVE_CLAUDE_DIRS="<cfgA>:<cfgB>" uv run make live-claude""
 
 from __future__ import annotations
 
+import json
 import secrets
+import subprocess
 import warnings
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 from fakes_claude import claude_agent
-from relay_rig import online_names, paths_in, relayd_status, stop_daemon, wait_until
+from relay_rig import BIN, online_names, paths_in, relayd_status, stop_daemon, wait_until
 from stream_claude import StreamJsonClaude
 
 START_S = 180.0
@@ -20,6 +23,7 @@ OWN_TOOLS = ",".join(
     f"mcp__plugin_mz-relay_mz-relay__{tool}" for tool in ("send", "inbox", "ack", "peers")
 )
 GATE_DENIAL = "is blocked because a peer message is part of this turn"
+HOOK_S = 30.0
 
 
 def live_roster(cfg_a: Path, cfg_b: Path) -> str:
@@ -40,6 +44,36 @@ def peer_line_with(cfg: Path, session_id: str, needle: str) -> bool:
         if classified.kind is LineKind.MZ_PEER and needle in classified.content:
             return True
     return False
+
+
+def run_hook(args: list[str], payload: Mapping[str, object], env: dict[str, str]) -> str:
+    """One `mz-relay hook ...` call as Claude makes it: JSON on stdin, its stdout back."""
+    done = subprocess.run(
+        [str(BIN), "hook", *args],
+        input=json.dumps(payload),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=HOOK_S,
+        check=True,
+    )
+    return done.stdout
+
+
+def prompt_ends(transcript: Path) -> dict[str, tuple[str, int]]:
+    """The first user line holding each word: its promptId and the offset just past it."""
+    from mz_relay.adapters.claude_transcript import Transcript
+
+    found: dict[str, tuple[str, int]] = {}
+    for end, line in Transcript(transcript).lines_back(0):
+        owner = line.get("promptId")
+        message = line.get("message")
+        # Raw content: classify() leaves SDK prompts (turnOrigin "sdk") without text.
+        content = json.dumps(message.get("content")) if isinstance(message, dict) else ""
+        for word in ("READY", "PING-"):
+            if line.get("type") == "user" and isinstance(owner, str) and word in content:
+                found[word] = (owner, end)  # newest first, so the oldest line wins
+    return found
 
 
 @pytest.mark.live_claude
@@ -116,6 +150,39 @@ def test_two_claude_accounts_exchange_a_message_and_the_read_only_gate_holds(
         # A model that refuses on its own also leaves no file, so say whether the gate fired.
         if not b.saw(GATE_DENIAL):
             warnings.warn("no gate denial in liveb's output; (c) passed without it", stacklevel=1)
+
+        # (d) turn 1's Stop, replayed after the peer turn replied, records turn 1's own end
+        # by prompt_id, so the peer turn stays gated; without prompt_id it would be ungated.
+        from mz_relay.adapters.claude_transcript import TranscriptWatcher
+        from mz_relay.hooks import read_offset
+
+        transcript = TranscriptWatcher(cfg_b, b_session).path()
+        assert transcript is not None
+        prompts = prompt_ends(transcript)
+        assert {"READY", "PING-"} <= prompts.keys(), f"prompt lines without promptId: {prompts}"
+        ready_id, _ = prompts["READY"]
+        peer_id, peer_end = prompts["PING-"]
+        assert ready_id != peer_id
+        turn_end_file = paths.turn_end_dir / b_session
+
+        def own_stop_recorded() -> bool:
+            end = read_offset(turn_end_file)
+            return end is not None and end > peer_end
+
+        assert wait_until(own_stop_recorded, HOOK_S, POLL_S), "the peer turn's Stop never ran"
+        hook_env = {**relay_env, "CLAUDE_CONFIG_DIR": str(cfg_b), "MZ_RELAY_NAME": "liveb"}
+        base = {"session_id": b_session, "cwd": str(work_b), "transcript_path": str(transcript)}
+        write = {**base, "hook_event_name": "PreToolUse", "tool_name": "Write"}
+        stop = {**base, "hook_event_name": "Stop"}
+
+        # B's waiter from an earlier Stop holds the lock, so each replay records and exits.
+        run_hook(["wait", "Stop"], stop, hook_env)
+        assert (read_offset(turn_end_file) or 0) > peer_end
+        assert run_hook(["gate"], write, hook_env) == ""
+
+        run_hook(["wait", "Stop"], {**stop, "prompt_id": ready_id}, hook_env)
+        assert (read_offset(turn_end_file) or 0) < peer_end
+        assert '"permissionDecision": "deny"' in run_hook(["gate"], write, hook_env)
     finally:
         for session in sessions:
             session.close()

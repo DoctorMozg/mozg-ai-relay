@@ -131,7 +131,7 @@ CLAUDE_CONFIG_DIR=~/.claude              claude plugin install mz-relay@mz-relay
 CLAUDE_CONFIG_DIR=~/claude-corp/.claude  claude plugin install mz-relay@mz-relay --config relay_name=builder
 ```
 
-The plugin adds the MCP server, the `SessionStart` and `Stop` wait hooks and the `PreToolUse` gate. The `relay_name` option (`userConfig`) is the agent's roster name. Left empty, the session is matched by `claude_config_dir` and then by `cwd` in the roster. The environment variable `MZ_RELAY_NAME` also sets the name, and the plugin option wins when both are set. `claude plugin configure mz-relay` shows the option and whether it is unset.
+The plugin adds the MCP server, the `SessionStart` and `Stop` wait hooks and the `PreToolUse` gate. When Claude Code passes `CLAUDE_CODE_MESSAGING_SOCKET` to hooks, the session has native delivery and the `SessionStart` waiter exits at once: Claude Code 2.1.325 sometimes fails to background that hook and blocks startup on it. The `Stop` waiter covers fallback delivery from the first turn's end. The `relay_name` option (`userConfig`) is the agent's roster name. Left empty, the session is matched by `claude_config_dir` and then by `cwd` in the roster. The environment variable `MZ_RELAY_NAME` also sets the name, and the plugin option wins when both are set. `claude plugin configure mz-relay` shows the option and whether it is unset.
 
 ### Codex
 
@@ -374,7 +374,7 @@ The stream resumes from the browser's `Last-Event-ID`. When relayd's event buffe
 Security model, each item enforced in `ui_server.py`:
 
 - **Loopback only.** The listener is `127.0.0.1`. A request whose `Host` is not `127.0.0.1:<port>` or `localhost:<port>` gets 403, which stops DNS rebinding.
-- **One-time sign-in.** Each `mz-relay ui` run makes a fresh token (`secrets.token_urlsafe(32)`). Unless `--no-open` is given, the browser opens a launch page `<runtime dir>/ui-<pid>.html` (mode 0600, forwards to the token address, deleted on exit) rather than the address, so the token never appears in the browser's argv. Opening that address sets the cookie `mzr_ui_<port>` (`HttpOnly`, `SameSite=Strict`) and redirects to `/`, which drops the token from the address bar and history. Tokens are compared in constant time. The cookie name carries the port because cookies ignore ports.
+- **One-time sign-in.** Each `mz-relay ui` run makes a fresh token (`secrets.token_urlsafe(32)`). Unless `--no-open` is given, the browser opens a launch page `<runtime dir>/ui-<pid>.html` (mode 0600, forwards to the token address, deleted on exit) rather than the address, so the token never appears in the browser's argv. Opening that address sets the cookie `mzr_ui_<port>` (`HttpOnly`, `SameSite=Strict`) and answers with a page that refreshes to `/`, which drops the token from the address bar and history. A redirect would not do: inside the navigation the `file://` launch page started, it counts as cross-site and the browser leaves the `Strict` cookie off it. Tokens are compared in constant time. The cookie name carries the port because cookies ignore ports.
 - **Signed in for everything else.** Pages, static files and the API answer 401 without the cookie.
 - **POST checks.** `Origin` must equal `http://<Host>`, the content type must be `application/json`, and the body must be a JSON object of at most 64 KiB (65536 bytes). A failure is refused with 403, 415, 413 or 400.
 - **Response headers.** Every answer carries a CSP (`default-src 'self'`, `frame-ancestors 'none'`, `form-action 'none'`), `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and `Cache-Control: no-store`. No CORS header is ever sent.
@@ -546,7 +546,7 @@ mz-relay is built for one person's agents on one machine, under one OS user.
 - **Extensions run inside relayd.** An extension is code with full access to relayd's process, so enable only trusted modules from `mz_relay.ext`. Each has its own database file. The board's access rules gate agents, not local processes.
 
 > [!CAUTION]
-> **Data protection.** Relaying corporate code to an agent on a personal account moves it out of the commercial-account data terms. Per the project research, consumer Claude accounts (Pro, Max) may train on data and keep it up to five years when opted in, while commercial accounts do not train on customer content. Whether a relay is allowed is an employer-policy question. This note has not been re-checked against Anthropic's current terms (UNTESTED). The hold default exists for this route.
+> **Data protection.** Relaying corporate code to an agent on a personal account moves it out of the commercial-account data terms. Checked against Anthropic's published terms on 2026-11-15: consumer plans (Free, Pro and Max, including Claude Code signed in with them) are used for model training unless the user opts out in the account settings. Chats used for training are kept de-identified for up to five years, and feedback and safety-flagged content are kept longer whatever the setting ([consumer terms update](https://www.anthropic.com/news/updates-to-our-consumer-terms), [privacy policy](https://www.anthropic.com/legal/privacy), [retention](https://privacy.claude.com/en/articles/10023548-how-long-do-you-store-my-data)). Commercial accounts (Team, Enterprise, the API, Claude Gov) are not used for training by default; submitted feedback and explicit opt-ins are the exceptions ([commercial terms](https://www.anthropic.com/legal/commercial-terms), [model training](https://privacy.claude.com/en/articles/7996868-is-my-data-used-for-model-training)). Terms change, so check them again before relying on this. Whether a relay is allowed is an employer-policy question. The hold default exists for this route.
 
 ## Demo
 
@@ -603,12 +603,11 @@ Logs are `relayd.log` and `hooks.log` in the state directory (`~/.local/state/mz
 > [!NOTE]
 > Every live test and the demo passed on 2026-11-14 against the [tested versions](#tested-versions). On 2026-11-15 every live test passed again with its board step: an agent on each harness read the board from a read-only peer turn.
 
-Four claims remain open:
+No claim is open. The last three were closed on 2026-11-15, after the `SessionStart` change in [Claude Code](#claude-code) (`make live-board` then passed 10 runs in a row):
 
-- **Late async `Stop` on Claude.** A `Stop` that runs after the next peer turn has replied records its own turn's end by `prompt_id` (see [Read-only roles](#read-only-roles)). Unit tests cover it with transcript lines shaped like a 2.1.325 probe. No live test reproduces the timing.
-- **Account data terms.** The consumer and commercial data terms in the [threat model](#threat-model) come from the project research and have not been re-checked against Anthropic's current terms.
-- **Web UI launch and reconnect.** `tests/test_ui_server.py` covers the HTTP layer and `node --test` covers the front end's pure helpers. A manual pass in headless Chrome on 2026-11-14 checked sign-in, the live stream, Approve, the composer, the board and notes tabs and dark mode, but no automated test drives the page. The browser launch from `mz-relay ui` and the live stream's reconnect have not been run.
-- **Board lease in real time.** `tests/test_board.py` covers the 30-minute reclaim with a fake clock, also through a running relayd's event pump. No live run waits out a lease. The reviewer rule passed live in `make live-board`.
+- **Late async `Stop` on Claude.** `make live-claude` replays the first turn's `Stop` with its `prompt_id` after the peer turn has replied, against the real transcript. The recorded turn end stays before the peer line and the gate denies `Write`. The same `Stop` replayed without `prompt_id` opens the gate. The replay sets the order; it does not make Claude Code run a `Stop` late on its own.
+- **Web UI launch and reconnect.** `make live-ui` (see [Development](#development)) drives the page in headless Chrome from the browser launch through a `relayd` restart. Its first run found that sign-in through the launch page never completed, because the redirect lost the `Strict` cookie. Sign-in now refreshes instead (see [Web UI](#web-ui)).
+- **Board lease in real time.** `tests/test_board.py` lets a 1-second lease lapse on the system clock inside a running relayd. The claim holds until relay activity arrives, then the task reopens. A fake clock covers the 30-minute value.
 
 ## Writing an extension
 
@@ -672,12 +671,14 @@ Enable it with `enabled = ["counter"]`. The agent tool is `counter_hit`. The ter
 uv sync                         # mypy, pre-commit, pytest, pytest-xdist, ruff
 uv run make check               # ruff, mypy, all test suites, claude plugin validate --strict, pre-commit
 make js                         # node --test on the TS adapters and plugins/mz-relay/tests/ui/*.test.js (Node with type stripping, no npm)
-make live-claude                # also live-codex, live-pi, live-opencode, live-demo, live-board
+make live-claude                # also live-codex, live-pi, live-opencode, live-demo, live-board, live-ui
 ```
 
 The live targets drive the real harness and are excluded from `check`. Each reads its own environment (for example `MZ_RELAY_LIVE_DEMO`), and the test files under `plugins/mz-relay/tests/live/` say which.
 
 `make live-board` needs two Claude accounts: `MZ_RELAY_LIVE_CLAUDE_DIRS="<cfgA>:<cfgB>" uv run make live-board`. It takes a board task from post to done, and one agent reads another's note along the way (`tests/live/test_live_board.py`).
+
+`make live-ui` needs Chrome or Chromium on `PATH`, or its path in `MZ_RELAY_LIVE_CHROME`. It runs `mz-relay ui` under a pty with a recording `BROWSER`, opens the recorded launch page in headless Chrome over `--remote-debugging-pipe`, and checks sign-in, a message on the live stream, and a second message after `relayd` is stopped and the server starts a new one (`tests/live/test_live_ui.py`).
 
 Layout: `.claude-plugin/marketplace.json` points at `plugins/mz-relay/`, which holds `bin/`, `src/mz_relay/`, `hooks/hooks.json`, `.mcp.json`, `adapters/{pi,opencode}/`, `data/` and `tests/`. Versions are bumped by hand in five places that `tests/test_versions.py` keeps equal. See [CHANGELOG.md](CHANGELOG.md).
 
